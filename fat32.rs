@@ -5,6 +5,14 @@
 // Record. Only need to pass one parameter to each funtion. Not sure
 // if this is a clever idea given Rust's ownership semantics. Fixing
 // errors thrown by the compiler as I go.
+//
+// I would like to implement a simple file system traversal. The idea
+// is to have a simple correctness check as follows. The content of
+// each file is checksummed and recored in its file name. Similarly,
+// all file names (and attributes) are checksummed into the parent
+// directory's name. Use a Python script to generate valid inputs,
+// i.e., mount a disk image on the host, create files, and read the
+// resulting image using the Rust FAT32 implementation.
 
 // 0x00	0x80 if active (bootable), 0 otherwise	1
 // 0x01	start of the partition in CHS-addressing	3
@@ -171,7 +179,7 @@ fn print_DirEntry(e: &DirEntry) {
    } else if (e.attr & ATTR_VOLUME_ID) != 0 {
        println!("Volume name is {}", r.unwrap());
    } else if (e.attr & ATTR_DIRECTORY) != 0 {
-       println!("{} (dir)", r.unwrap());
+       println!("{} {} {} (dir), cluster #: {}", r.unwrap(), e.name[0], e.name[1], cluster_number(e));
    } else {
        println!("{} [size {} byte(s), 1st cluster #: {}]", r.unwrap(), e.file_size, cluster_number(e));
    }
@@ -185,6 +193,10 @@ use std::fs::File;
 use std::mem;
 use std::io::SeekFrom;
 use std::str;
+use std::cmp;
+
+extern crate sha2;
+use sha2::{Sha256, Digest};
 
 fn root_dir_sectors(bpb: &BIOSParameterBlock) -> u32 {
    return (((bpb.root_dir_entries * 32) + (bpb.bytes_per_sec - 1)) / bpb.bytes_per_sec) as u32;
@@ -269,35 +281,53 @@ fn cluster_number(e: &DirEntry) -> u32 {
    return e.first_cluster_low as u32 + ((e.first_cluster_high as u32) << 16);
 }
 
-// fn read_directory(fat: &Fat32Media, first_sector: i32) {
+fn read_directory(fat: &mut Fat32Media, first_sector: u64) {
+    let mut first_data_sec = [0; 512];
+    let offset = 512 * fat.mbr.partitions[0].offset_lba as u64 +
+                 first_sector * 512;
+    fat.f.seek(SeekFrom::Start(offset));
+    fat.f.read_exact(&mut first_data_sec).expect("Unable to read first_data_sec");
 
-//     // Read first sector of root directory
-//     let mut first_data_sec = [0; 512];
-//     let offset = 512 * fat.mbr.partitions[0].offset_lba as u64 + first_data_sector(&fat) as u64 * 512;
-//     fat.f.seek(SeekFrom::Start(offset));
-//     fat.f.read_exact(&mut first_data_sec).expect("Unable to read first_data_sec");
+    for i in 0..16 {
+        let mut dir_entry: DirEntry = unsafe { mem::transmute_copy(&first_data_sec[core::mem::size_of::<DirEntry>()*i]) };
+        // println!("{:?}", dir_entry);
 
-//     for i in 0..16 {
-//         let mut dir_entry: DirEntry = unsafe { mem::transmute_copy(&first_data_sec[core::mem::size_of::<DirEntry>()*i]) };
-//         // println!("{:?}", dir_entry);
-//         if dir_entry.name[0] != 0xE5 && dir_entry.name[0] != 0x00 {
-//             print_DirEntry(&dir_entry);
+        // Special case where all subsequent entries are free and need
+        // not be examined.
+        if dir_entry.name[0] == 0x0 {
+            break;
+        }
 
-//             if (dir_entry.attr & ATTR_DIRECTORY) == 0 && (dir_entry.attr & ATTR_VOLUME_ID) == 0 {
-//                 let sec: u32 = first_sector_of_cluster(cluster_number(&dir_entry), &fat);
-//                 let mut data = [0; 512];
-//                 let offset: u64 = 512 * fat.mbr.partitions[0].offset_lba as u64 + (512 * sec) as u64;
-//                 fat.f.seek(SeekFrom::Start(offset));
-//                 fat.f.read_exact(&mut data).expect("Unable to read sector");
-//                 println!("{}", str::from_utf8(&data).unwrap());
-//             }
-//         }
-//         if dir_entry.name[0] == 0x00 {
-//             break;
-//         }
-//     }
-//     println!("");
-// }
+        let free_entry: u8 = 0xE5;
+        if dir_entry.name[0] != free_entry {
+            print_DirEntry(&dir_entry);
+
+            if (dir_entry.attr & ATTR_DIRECTORY) == 0 && (dir_entry.attr & ATTR_VOLUME_ID) == 0 {
+                let sec: u32 = first_sector_of_cluster(cluster_number(&dir_entry), &fat);
+                let mut data = [0; 512];
+                let offset: u64 = 512 * fat.mbr.partitions[0].offset_lba as u64 + (512 * sec) as u64;
+                fat.f.seek(SeekFrom::Start(offset));
+                fat.f.read_exact(&mut data).expect("Unable to read sector");
+                // println!("{}", str::from_utf8(&data[0 .. cmp::min(512, dir_entry.file_size) as usize]).unwrap());
+            } else if (dir_entry.attr & ATTR_LONG_NAME) != 0 {
+                // skip long name entries
+            } else if (dir_entry.attr & ATTR_DIRECTORY) != 0 {
+                // Skip . and ..
+                // 46 is '.' (dot); 32 is ' ' (space)
+                let dot_name : [u8; 11] = [46, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32];
+                let dotdot_name : [u8; 11] = [46, 46, 32, 32, 32, 32, 32, 32, 32, 32, 32];
+
+                if (dir_entry.name != dot_name && dir_entry.name != dotdot_name) {
+                    read_directory(fat, first_sector_of_cluster(cluster_number(&dir_entry), fat) as u64);
+                }
+            }
+        }
+        if dir_entry.name[0] == 0x00 {
+            break;
+        }
+    }
+    println!("");
+}
 
 // http://stackoverflow.com/questions/31192956/whats-the-de-facto-way-of-reading-and-writing-files-in-rust-1-x
 fn main() {
@@ -364,30 +394,10 @@ fn main() {
 
     // Read first sector of root directory
     let mut first_data_sec = [0; 512];
-    let offset = 512 * fat.mbr.partitions[0].offset_lba as u64 + first_data_sector(&fat) as u64 * 512;
-    fat.f.seek(SeekFrom::Start(offset));
-    fat.f.read_exact(&mut first_data_sec).expect("Unable to read first_data_sec");
-
-    for i in 0..16 {
-        let mut dir_entry: DirEntry = unsafe { mem::transmute_copy(&first_data_sec[core::mem::size_of::<DirEntry>()*i]) };
-        // println!("{:?}", dir_entry);
-        if dir_entry.name[0] != 0xE5 && dir_entry.name[0] != 0x00 {
-            print_DirEntry(&dir_entry);
-
-            if (dir_entry.attr & ATTR_DIRECTORY) == 0 && (dir_entry.attr & ATTR_VOLUME_ID) == 0 {
-                let sec: u32 = first_sector_of_cluster(cluster_number(&dir_entry), &fat);
-                let mut data = [0; 512];
-                let offset: u64 = 512 * fat.mbr.partitions[0].offset_lba as u64 + (512 * sec) as u64;
-                fat.f.seek(SeekFrom::Start(offset));
-                fat.f.read_exact(&mut data).expect("Unable to read sector");
-                println!("{}", str::from_utf8(&data).unwrap());
-            }
-        }
-        if dir_entry.name[0] == 0x00 {
-            break;
-        }
-    }
-    println!("");
+    let offset = 512 * fat.mbr.partitions[0].offset_lba as u64 +
+                 first_sector_of_cluster(fat.fat32.root_cluster, &fat) as u64 * 512;
+    let sector = first_sector_of_cluster(fat.fat32.root_cluster, &fat) as u64;
+    read_directory(&mut fat, sector);
 
     // let first_fat_entry = (first_data_sec[0] as u32) +
     //                       ((first_data_sec[1] as u32) << 8) +
