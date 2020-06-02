@@ -270,15 +270,64 @@ impl Traverse for Fat32Media {
      }
 }
 
-const FAT32_Bytes_Per_Fat_Entry: i32 = 4;
+const FAT32_Bytes_Per_Fat_Entry: u32 = 4;
 
 /// Return the FAT32 entry for a given cluster number.
-//fn cluster_number_to_fat32_entry(fat: &Fat32Media, cluster_nr: u32) -> u32 {
-//   let fat_offset: u32 = cluster_nr * 4;
-//}
+fn cluster_number_to_fat32_entry(fat: &mut Fat32Media, cluster_nr: u32) -> u32 {
+   let fat_offset: u32 = cluster_nr * FAT32_Bytes_Per_Fat_Entry;
+   let sector = fat.bpb.reserved_sectors as u32 + fat_offset / (fat.bpb.bytes_per_sec as u32);
+   let offset = fat_offset % fat.bpb.bytes_per_sec as u32;
+   let mut buf = [0; 4];
+
+   let file_offset = 512 * fat.mbr.partitions[0].offset_lba + sector * 512 + offset;
+   fat.f.seek(SeekFrom::Start(file_offset.into()));
+   fat.f.read_exact(&mut buf).expect("Error reading FAT32 entry.");
+
+   let mut entry: u32 = unsafe { mem::transmute(buf) };
+   entry &= 0x0FFFFFFF;
+   return entry;
+}
 
 fn cluster_number(e: &DirEntry) -> u32 {
    return e.first_cluster_low as u32 + ((e.first_cluster_high as u32) << 16);
+}
+
+// Most-significant 4 bits of a FAT32 entry are to be ignored.
+fn is_eof(fat_entry: u32) -> bool {
+    return fat_entry >= 0x0FFFFFFE;
+}
+
+fn check_file(e: &DirEntry, fat: &mut Fat32Media) -> bool {
+
+    let mut hasher = Sha256::new();
+
+    // Assume that our test case generator only creates files that are
+    // a multiple of 512 in size.
+    assert!(e.file_size % 512 == 0);
+    let mut size = e.file_size;
+
+    let mut cluster = cluster_number(&e);
+    assert!(cluster != 0); // TODO handle empty files properly
+
+    while !is_eof(cluster) {
+        print!("{} ", cluster);
+        for i in 0..fat.bpb.sectors_per_cluster {
+            let mut sector_data = [0; 512];
+            let sector = first_sector_of_cluster(cluster, fat) + i as u32;
+            let file_offset = 512 * fat.mbr.partitions[0].offset_lba as u64 + sector as u64 * 512;
+            fat.f.seek(SeekFrom::Start(file_offset.into()));
+            fat.f.read_exact(&mut sector_data).expect("Error reading sector.");
+            hasher.input(sector_data.as_ref());
+            // println!("Sector {} data: {:x?}", i, &sector_data[0..32]);
+        }
+        cluster = cluster_number_to_fat32_entry(fat, cluster);
+    }
+
+    let result = hasher.result();
+
+    // Convert binary hash into hex string and compare with file name.
+    let s = format!("{:02X?}{:02X?}{:02X?}{:02X?}", result[0], result[1], result[2], result[3]);
+    return s == str::from_utf8(&e.name[0..8]).ok().unwrap();
 }
 
 fn read_directory(fat: &mut Fat32Media, first_sector: u64) {
@@ -302,13 +351,15 @@ fn read_directory(fat: &mut Fat32Media, first_sector: u64) {
         if dir_entry.name[0] != free_entry {
             print_DirEntry(&dir_entry);
 
+            // This is a file.
             if (dir_entry.attr & ATTR_DIRECTORY) == 0 && (dir_entry.attr & ATTR_VOLUME_ID) == 0 {
-                let sec: u32 = first_sector_of_cluster(cluster_number(&dir_entry), &fat);
-                let mut data = [0; 512];
-                let offset: u64 = 512 * fat.mbr.partitions[0].offset_lba as u64 + (512 * sec) as u64;
-                fat.f.seek(SeekFrom::Start(offset));
-                fat.f.read_exact(&mut data).expect("Unable to read sector");
+                // let sec: u32 = first_sector_of_cluster(cluster_number(&dir_entry), &fat);
+                // let mut data = [0; 512];
+                // let offset: u64 = 512 * fat.mbr.partitions[0].offset_lba as u64 + (512 * sec) as u64;
+                // fat.f.seek(SeekFrom::Start(offset));
+                // fat.f.read_exact(&mut data).expect("Unable to read sector");
                 // println!("{}", str::from_utf8(&data[0 .. cmp::min(512, dir_entry.file_size) as usize]).unwrap());
+                assert!(check_file(&dir_entry, fat));
             } else if (dir_entry.attr & ATTR_LONG_NAME) != 0 {
                 // skip long name entries
             } else if (dir_entry.attr & ATTR_DIRECTORY) != 0 {
