@@ -21,7 +21,7 @@
 // 0x08	relative offset to the partition in sectors (LBA)	4
 // 0x0C	size of the partition in sectors	4
 
-#[derive(Debug)]
+#[derive(Debug,Copy,Clone)]
 #[repr(C)]
 #[repr(packed)]
 struct PartitionTable {
@@ -64,7 +64,7 @@ struct PartitionTable {
 
 // size: 36 bytes
 // Stored in first sector of a FAT volume.
-#[derive(Debug)]
+#[derive(Debug,Copy,Clone)]
 #[repr(C)]
 #[repr(packed)]
 struct BIOSParameterBlock {
@@ -84,7 +84,7 @@ struct BIOSParameterBlock {
     total_secs_32: u32
 }
 
-#[derive(Debug)]
+#[derive(Debug,Copy,Clone)]
 #[repr(C)]
 struct Fat12and16Block {
     drive_nr: u8,
@@ -95,7 +95,7 @@ struct Fat12and16Block {
     file_sys_type: [u8; 8]
 }
 
-#[derive(Debug)]
+#[derive(Debug,Copy,Clone)]
 #[repr(C)]
 #[repr(packed)]
 struct Fat32 {
@@ -114,7 +114,7 @@ struct Fat32 {
     file_sys_type: [u8; 8]
 }
 
-#[derive(Debug)]
+#[derive(Debug,Copy,Clone)]
 #[repr(C)]
 #[repr(packed)]
 struct MasterBootRecord {
@@ -127,7 +127,7 @@ struct MasterBootRecord {
 }
 
 #[repr(C, packed)]
-#[derive(Debug)]
+#[derive(Debug,Copy,Clone)]
 struct DirEntry {
    name: [u8; 11],
    attr: u8,
@@ -147,7 +147,8 @@ struct Fat32Media {
      f: std::fs::File,
      mbr: MasterBootRecord,
      bpb: BIOSParameterBlock,
-     fat32: Fat32
+     fat32: Fat32,
+     selftest: bool
 }
 
 const ATTR_READ_ONLY:u8 = 0x1;
@@ -157,43 +158,94 @@ const ATTR_VOLUME_ID:u8 = 0x8;
 const ATTR_DIRECTORY:u8 = 0x10;
 const ATTR_ARCHIVE  :u8 = 0x20;
 
-const ATTR_LONG_NAME:u8 = (ATTR_READ_ONLY | ATTR_HIDDEN | ATTR_SYSTEM | ATTR_VOLUME_ID );
-const ATTR_LONG_NAME_MASK:u8 = (ATTR_READ_ONLY | ATTR_HIDDEN | ATTR_SYSTEM | ATTR_VOLUME_ID |
-                                ATTR_DIRECTORY | ATTR_ARCHIVE);
+const ATTR_LONG_NAME:u8 = ATTR_READ_ONLY | ATTR_HIDDEN | ATTR_SYSTEM | ATTR_VOLUME_ID;
+const ATTR_LONG_NAME_MASK:u8 = ATTR_READ_ONLY | ATTR_HIDDEN | ATTR_SYSTEM | ATTR_VOLUME_ID |
+                               ATTR_DIRECTORY | ATTR_ARCHIVE;
+
+const LAST_LONG_ENTRY:u8 = 0x40;
+const LONG_ENTRY_ORD_MASK: u8 = 0x3F;
+
+// A long file name can have a maximum of 255 (UTF16 encoded)
+// characters.
+const LONG_NAME_MAX_CHARS: usize = 255;
+const CHARS_PER_LONG_ENTRY: u32 = 13;
+
+// A long entry can store 26 bytes of a file name. Since each
+// character is encoded in 2 bytes (UTF16), this makes 13 characters
+// per long entry.
+
+#[repr(C, packed)]
+#[derive(Debug,Copy,Clone)]
+struct LongEntry { // offset (byte)
+  ord:u8,          // 0
+  name1:[u8;10],   // 1
+  attr:u8,         // 11
+  dir_type:u8,     // 12
+  checksum:u8,     // 13
+  name2:[u8;12],   // 14
+  unused:[u8;2],   // 26
+  name3:[u8;4]     // 28
+}
+
+impl LongEntry {
+    fn name(&self) -> [u16;13] {
+        let mut n: [u16;13] = [0;13];
+        n[0] = self.name1[0] as u16 | (self.name1[1] as u16) << 8;
+        n[1] = self.name1[2] as u16 | (self.name1[3] as u16) << 8;
+        n[2] = self.name1[4] as u16 | (self.name1[5] as u16) << 8;
+        n[3] = self.name1[6] as u16 | (self.name1[7] as u16) << 8;
+        n[4] = self.name1[8] as u16 | (self.name1[9] as u16) << 8;
+
+        n[5]  = self.name2[0]  as u16 | (self.name2[1]  as u16) << 8;
+        n[6]  = self.name2[2]  as u16 | (self.name2[3]  as u16) << 8;
+        n[7]  = self.name2[4]  as u16 | (self.name2[5]  as u16) << 8;
+        n[8]  = self.name2[6]  as u16 | (self.name2[7]  as u16) << 8;
+        n[9]  = self.name2[8]  as u16 | (self.name2[9]  as u16) << 8;
+        n[10] = self.name2[10] as u16 | (self.name2[11] as u16) << 8;
+
+        n[11] = self.name3[0] as u16 | (self.name3[1] as u16) << 8;
+        n[12] = self.name3[2] as u16 | (self.name3[3] as u16) << 8;
+
+        return n;
+    }
+}
 
 // fn is_attr_long_name(e: &DirEntry) -> bool {
 //     return (e.attr & ( ATTR_READ_ONLY | ATTR_HIDDEN | ATTR_SYSTEM | ATTR_VOLUME_ID ));
 // }
 
-fn print_DirEntry(e: &DirEntry) {
-   let r = str::from_utf8(&e.name);
-   if r.is_err() {
-      println!("name contains invalid charaters.");
-      return;
-   }
+impl DirEntry {
+    fn print(&self) {
+       let r = str::from_utf8(&self.name);
 
-   if e.attr == ATTR_LONG_NAME_MASK {
-       println!("ATTR_LONG_NAME_MASK");
-   } else if e.attr == ATTR_LONG_NAME {
-       println!("ATTR_LONG_NAME");
-   } else if (e.attr & ATTR_VOLUME_ID) != 0 {
-       println!("Volume name is {}", r.unwrap());
-   } else if (e.attr & ATTR_DIRECTORY) != 0 {
-       println!("{} {} {} (dir), cluster #: {}", r.unwrap(), e.name[0], e.name[1], cluster_number(e));
-   } else {
-       println!("{} [size {} byte(s), 1st cluster #: {}]", r.unwrap(), e.file_size, cluster_number(e));
-   }
+       if (self.attr & ATTR_LONG_NAME_MASK) == ATTR_LONG_NAME {
+           // println!("ATTR_LONG_NAME");
+       }
+       if (self.attr & ATTR_LONG_NAME_MASK) != ATTR_LONG_NAME && self.name[0] != 0xE5 {
+           if (self.attr & (ATTR_DIRECTORY | ATTR_VOLUME_ID)) == 0x00 {
+               // Create a local copy to prevent "warning: borrow of
+               // packed field is unsafe and requires unsafe function or
+               // block (error E0133)"
+               let file_size = self.file_size;
+               println!("{} [size {} byte(s), 1st cluster #: {}]", r.unwrap(), file_size, cluster_number(self));
+           } else if (self.attr & (ATTR_DIRECTORY | ATTR_VOLUME_ID)) == ATTR_DIRECTORY {
+               println!("{} (dir), cluster #: {}", r.unwrap(), cluster_number(self));
+           } else if (self.attr & (ATTR_DIRECTORY | ATTR_VOLUME_ID)) == ATTR_VOLUME_ID {
+               println!("Volume name is {}", r.unwrap());
+           } else {
+               println!("Invalid entry");
+           }
+        }
+    }
 }
 
-//use std::io;
-use std::io::prelude::*;
+use std::convert::TryInto;
+use std::env;
 use std::fs::File;
-// use std::io::Read;
-//use std::slice;
-use std::mem;
+use std::io::prelude::*;
 use std::io::SeekFrom;
+use std::mem;
 use std::str;
-use std::cmp;
 
 extern crate sha2;
 use sha2::{Sha256, Digest};
@@ -222,7 +274,7 @@ fn fat_size(bpb: &BIOSParameterBlock, fat32: &Fat32) -> u32 {
     }
 }
 
-fn total_secs(bpb: &BIOSParameterBlock, fat32: &Fat32) -> u32 {
+fn total_secs(bpb: &BIOSParameterBlock) -> u32 {
     if bpb.total_secs_16 != 0 {
         return bpb.total_secs_16 as u32;
     } else {
@@ -232,9 +284,9 @@ fn total_secs(bpb: &BIOSParameterBlock, fat32: &Fat32) -> u32 {
 }
 
 fn data_secs(bpb: &BIOSParameterBlock, fat32: &Fat32) -> u32 {
-    return total_secs(&bpb, &fat32) - (bpb.reserved_sectors as u32 +
-                                        (bpb.fat_copies as u32 * fat_size(&bpb, &fat32)) +
-                                        root_dir_sectors(&bpb));
+    return total_secs(&bpb) - (bpb.reserved_sectors as u32 +
+                              (bpb.fat_copies as u32 * fat_size(&bpb, &fat32)) +
+                               root_dir_sectors(&bpb));
 }
 
 fn count_of_clusters(bpb: &BIOSParameterBlock, fat32: &Fat32) -> u32 {
@@ -270,17 +322,17 @@ impl Traverse for Fat32Media {
      }
 }
 
-const FAT32_Bytes_Per_Fat_Entry: u32 = 4;
+const FAT32_BYTES_PER_FAT_ENTRY: u32 = 4;
 
 /// Return the FAT32 entry for a given cluster number.
 fn cluster_number_to_fat32_entry(fat: &mut Fat32Media, cluster_nr: u32) -> u32 {
-   let fat_offset: u32 = cluster_nr * FAT32_Bytes_Per_Fat_Entry;
+   let fat_offset: u32 = cluster_nr * FAT32_BYTES_PER_FAT_ENTRY;
    let sector = fat.bpb.reserved_sectors as u32 + fat_offset / (fat.bpb.bytes_per_sec as u32);
    let offset = fat_offset % fat.bpb.bytes_per_sec as u32;
    let mut buf = [0; 4];
 
    let file_offset = 512 * fat.mbr.partitions[0].offset_lba + sector * 512 + offset;
-   fat.f.seek(SeekFrom::Start(file_offset.into()));
+   assert!(fat.f.seek(SeekFrom::Start(file_offset.into())).is_ok());
    fat.f.read_exact(&mut buf).expect("Error reading FAT32 entry.");
 
    let mut entry: u32 = unsafe { mem::transmute(buf) };
@@ -303,8 +355,8 @@ fn check_file(e: &DirEntry, fat: &mut Fat32Media) -> bool {
 
     // Assume that our test case generator only creates files that are
     // a multiple of 512 in size.
+    // TODO Handle files that are not a multiple of 512 in size.
     assert!(e.file_size % 512 == 0);
-    let mut size = e.file_size;
 
     let mut cluster = cluster_number(&e);
     assert!(cluster != 0); // TODO handle empty files properly
@@ -315,7 +367,7 @@ fn check_file(e: &DirEntry, fat: &mut Fat32Media) -> bool {
             let mut sector_data = [0; 512];
             let sector = first_sector_of_cluster(cluster, fat) + i as u32;
             let file_offset = 512 * fat.mbr.partitions[0].offset_lba as u64 + sector as u64 * 512;
-            fat.f.seek(SeekFrom::Start(file_offset.into()));
+            assert!(fat.f.seek(SeekFrom::Start(file_offset.into())).is_ok());
             fat.f.read_exact(&mut sector_data).expect("Error reading sector.");
             hasher.input(sector_data.as_ref());
             // println!("Sector {} data: {:x?}", i, &sector_data[0..32]);
@@ -330,59 +382,113 @@ fn check_file(e: &DirEntry, fat: &mut Fat32Media) -> bool {
     return s == str::from_utf8(&e.name[0..8]).ok().unwrap();
 }
 
-fn read_directory(fat: &mut Fat32Media, first_sector: u64) {
-    let mut first_data_sec = [0; 512];
-    let offset = 512 * fat.mbr.partitions[0].offset_lba as u64 +
-                 first_sector * 512;
-    fat.f.seek(SeekFrom::Start(offset));
-    fat.f.read_exact(&mut first_data_sec).expect("Unable to read first_data_sec");
+// For FAT32 even the root directory is a variable-sized cluster
+// chain. Read the sectors and follow the chain to visit each
+// directory entry.
+fn read_directory(fat: &mut Fat32Media, mut cluster: u32) {
 
-    for i in 0..16 {
-        let mut dir_entry: DirEntry = unsafe { mem::transmute_copy(&first_data_sec[core::mem::size_of::<DirEntry>()*i]) };
-        // println!("{:?}", dir_entry);
+    let mut long_name: [u16;LONG_NAME_MAX_CHARS] = [0;LONG_NAME_MAX_CHARS];
 
-        // Special case where all subsequent entries are free and need
-        // not be examined.
-        if dir_entry.name[0] == 0x0 {
-            break;
-        }
+    while !is_eof(cluster) {
+        print!("{} ", cluster);
+        for i in 0..fat.bpb.sectors_per_cluster {
+            let mut sector_data = [0; 512];
+            let sector = first_sector_of_cluster(cluster, fat) + i as u32;
+            let file_offset = 512 * fat.mbr.partitions[0].offset_lba as u64 + sector as u64 * 512;
+            assert!(fat.f.seek(SeekFrom::Start(file_offset.into())).is_ok());
+            fat.f.read_exact(&mut sector_data).expect("Error reading sector.");
 
-        let free_entry: u8 = 0xE5;
-        if dir_entry.name[0] != free_entry {
-            print_DirEntry(&dir_entry);
+            let entries_per_sector = sector_data.len() / core::mem::size_of::<DirEntry>();
+            for i in 0..entries_per_sector {
+                let dir_entry: DirEntry = unsafe { mem::transmute_copy(&sector_data[core::mem::size_of::<DirEntry>()*i]) };
+                let long_entry: LongEntry = unsafe { mem::transmute_copy(&sector_data[core::mem::size_of::<LongEntry>()*i]) };
 
-            // This is a file.
-            if (dir_entry.attr & ATTR_DIRECTORY) == 0 && (dir_entry.attr & ATTR_VOLUME_ID) == 0 {
-                // let sec: u32 = first_sector_of_cluster(cluster_number(&dir_entry), &fat);
-                // let mut data = [0; 512];
-                // let offset: u64 = 512 * fat.mbr.partitions[0].offset_lba as u64 + (512 * sec) as u64;
-                // fat.f.seek(SeekFrom::Start(offset));
-                // fat.f.read_exact(&mut data).expect("Unable to read sector");
-                // println!("{}", str::from_utf8(&data[0 .. cmp::min(512, dir_entry.file_size) as usize]).unwrap());
-                assert!(check_file(&dir_entry, fat));
-            } else if (dir_entry.attr & ATTR_LONG_NAME) != 0 {
-                // skip long name entries
-            } else if (dir_entry.attr & ATTR_DIRECTORY) != 0 {
-                // Skip . and ..
-                // 46 is '.' (dot); 32 is ' ' (space)
-                let dot_name : [u8; 11] = [46, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32];
-                let dotdot_name : [u8; 11] = [46, 46, 32, 32, 32, 32, 32, 32, 32, 32, 32];
+                // Special case where all subsequent entries are free and need
+                // not be examined.
+                if dir_entry.name[0] == 0x0 {
+                    break;
+                }
 
-                if (dir_entry.name != dot_name && dir_entry.name != dotdot_name) {
-                    read_directory(fat, first_sector_of_cluster(cluster_number(&dir_entry), fat) as u64);
+                let free_entry: u8 = 0xE5;
+                if dir_entry.name[0] != free_entry {
+                    dir_entry.print();
+
+                    if (dir_entry.attr & ATTR_LONG_NAME_MASK) == ATTR_LONG_NAME {
+                        // assemble long name
+                        if (long_entry.ord & LAST_LONG_ENTRY) != 0 {
+                            long_name = [0; LONG_NAME_MAX_CHARS];
+                        }
+
+                        let ord = long_entry.ord & LONG_ENTRY_ORD_MASK;
+                        let start: usize = (CHARS_PER_LONG_ENTRY*(ord-1) as u32).try_into().unwrap();
+                        let end  : usize = (CHARS_PER_LONG_ENTRY*(ord) as u32).try_into().unwrap();
+                        // print!("start={} end={} ", start, end);
+                        let slc = &mut long_name[start..end];
+                        slc.copy_from_slice(&long_entry.name());
+
+                        if ord == 1 {
+                            // String::from_utf16() will happily build a string containing a NUL character in the middle. Hence, we need to find the NUL character (if any) and only output the characters up to that point. In case the file name is a multiple of 13 characters long, there will not be a terminating NUL character.
+                            let mut long_name_len = LONG_NAME_MAX_CHARS;
+                            for (i, elem) in long_name.iter().enumerate() {
+                                if *elem == 0x0 {
+                                    long_name_len = i;
+                                    break;
+                                }
+                            }
+                            println!("{}", String::from_utf16(&long_name[0..long_name_len]).unwrap());
+                        }
+                        // TODO Compute and verify checksum for long file name entries.
+                    }
+
+                    // This is a file.
+                    if (dir_entry.attr & ATTR_DIRECTORY) == 0 && (dir_entry.attr & ATTR_VOLUME_ID) == 0 {
+                        if fat.selftest {
+                            check_file(&dir_entry, fat);
+                        }
+                     } else if (dir_entry.attr & ATTR_DIRECTORY) != 0 {
+                        // Skip . and ..
+                        // 46 is '.' (dot); 32 is ' ' (space)
+                        let dot_name : [u8; 11] = [46, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32];
+                        let dotdot_name : [u8; 11] = [46, 46, 32, 32, 32, 32, 32, 32, 32, 32, 32];
+
+                        if dir_entry.name != dot_name && dir_entry.name != dotdot_name {
+                            read_directory(fat, cluster_number(&dir_entry));
+                        }
+                    }
+                }
+                if dir_entry.name[0] == 0x00 {
+                    break;
                 }
             }
+            println!("");
         }
-        if dir_entry.name[0] == 0x00 {
-            break;
-        }
+        cluster = cluster_number_to_fat32_entry(fat, cluster);
     }
-    println!("");
 }
 
 // http://stackoverflow.com/questions/31192956/whats-the-de-facto-way-of-reading-and-writing-files-in-rust-1-x
 fn main() {
-    let mut f = File::open("test.img").expect("Unable to open file");
+    let args: Vec<String> = env::args().collect();
+    let filename = {
+        if args.len() < 2 {
+            "test.img"
+        } else {
+            &args[1]
+        }
+    };
+    let selftest = {
+        if args.len() > 2 {
+            if args[2] == "--selftest" {
+              true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    };
+
+    let mut f = File::open(filename).expect("Unable to open file");
     let mbr: MasterBootRecord = {
        let mut data = [0; 512];
        f.read_exact(&mut data).expect("Unable to read data");
@@ -390,14 +496,14 @@ fn main() {
     };
     let bpb = {
         let mut bpb_data = [0; 36];
-        f.seek(SeekFrom::Start((512 * mbr.partitions[0].offset_lba) as u64));
+        assert!(f.seek(SeekFrom::Start((512 * mbr.partitions[0].offset_lba) as u64)).is_ok());
         f.read_exact(&mut bpb_data).expect("Unable to read bpb data");
         unsafe { mem::transmute(bpb_data) }
     };
 
     let fat32: Fat32 = {
         let mut fat32_data = [0; 54];
-        f.seek(SeekFrom::Start(((512 * mbr.partitions[0].offset_lba) + 36) as u64));
+        assert!(f.seek(SeekFrom::Start(((512 * mbr.partitions[0].offset_lba) + 36) as u64)).is_ok());
         f.read_exact(&mut fat32_data).expect("Unable to read fat32 data");
         unsafe { mem::transmute(fat32_data) }
     };
@@ -406,7 +512,8 @@ fn main() {
         f: f,
         mbr: mbr,
         bpb: bpb,
-        fat32: fat32
+        fat32: fat32,
+        selftest: selftest
     };
 
     // assert!(data[510] == 0x55);
@@ -444,11 +551,11 @@ fn main() {
              first_sector_of_cluster(fat.fat32.root_cluster, &fat));
 
     // Read first sector of root directory
-    let mut first_data_sec = [0; 512];
-    let offset = 512 * fat.mbr.partitions[0].offset_lba as u64 +
-                 first_sector_of_cluster(fat.fat32.root_cluster, &fat) as u64 * 512;
-    let sector = first_sector_of_cluster(fat.fat32.root_cluster, &fat) as u64;
-    read_directory(&mut fat, sector);
+    // let mut first_data_sec = [0; 512];
+    // let offset = 512 * fat.mbr.partitions[0].offset_lba as u64 +
+    //              first_sector_of_cluster(fat.fat32.root_cluster, &fat) as u64 * 512;
+    let root_cluster = fat.fat32.root_cluster;
+    read_directory(&mut fat, root_cluster);
 
     // let first_fat_entry = (first_data_sec[0] as u32) +
     //                       ((first_data_sec[1] as u32) << 8) +
