@@ -148,7 +148,7 @@ struct Fat32Media {
      mbr: MasterBootRecord,
      bpb: BIOSParameterBlock,
      fat32: Fat32,
-     selftest: bool
+     opts: Opts
 }
 
 const ATTR_READ_ONLY:u8 = 0x1;
@@ -247,8 +247,36 @@ use std::io::SeekFrom;
 use std::mem;
 use std::str;
 
+extern crate clap;
+use clap::Clap;
 extern crate sha2;
 use sha2::{Sha256, Digest};
+
+#[derive(Clap)]
+#[clap(version = "0.1", author = "Thomas K.")]
+struct Opts {
+    #[clap(short,long, default_value = "test.img")]
+    diskimage: String,
+    #[clap(subcommand)]
+    subcmd: SubCommand
+}
+
+#[derive(Clap)]
+enum SubCommand {
+    #[clap(version = "0.1")]
+    Cat(Cat),
+    Selftest(Selftest)
+}
+
+#[derive(Clap)]
+struct Cat {
+    #[clap(short)]
+    path: String
+}
+
+#[derive(Clap)]
+struct Selftest {
+}
 
 fn root_dir_sectors(bpb: &BIOSParameterBlock) -> u32 {
    return (((bpb.root_dir_entries * 32) + (bpb.bytes_per_sec - 1)) / bpb.bytes_per_sec) as u32;
@@ -442,9 +470,13 @@ fn read_directory(fat: &mut Fat32Media, mut cluster: u32) {
 
                     // This is a file.
                     if (dir_entry.attr & ATTR_DIRECTORY) == 0 && (dir_entry.attr & ATTR_VOLUME_ID) == 0 {
-                        if fat.selftest {
-                            check_file(&dir_entry, fat);
+                        match &fat.opts.subcmd {
+                            SubCommand::Selftest(t) => {
+                                check_file(&dir_entry, fat);
+                            }
+                            _ => {}
                         }
+
                      } else if (dir_entry.attr & ATTR_DIRECTORY) != 0 {
                         // Skip . and ..
                         // 46 is '.' (dot); 32 is ' ' (space)
@@ -468,27 +500,9 @@ fn read_directory(fat: &mut Fat32Media, mut cluster: u32) {
 
 // http://stackoverflow.com/questions/31192956/whats-the-de-facto-way-of-reading-and-writing-files-in-rust-1-x
 fn main() {
-    let args: Vec<String> = env::args().collect();
-    let filename = {
-        if args.len() < 2 {
-            "test.img"
-        } else {
-            &args[1]
-        }
-    };
-    let selftest = {
-        if args.len() > 2 {
-            if args[2] == "--selftest" {
-              true
-            } else {
-                false
-            }
-        } else {
-            false
-        }
-    };
+    let opts: Opts = Opts::parse();
 
-    let mut f = File::open(filename).expect("Unable to open file");
+    let mut f = File::open(&opts.diskimage).expect("Unable to open file");
     let mbr: MasterBootRecord = {
        let mut data = [0; 512];
        f.read_exact(&mut data).expect("Unable to read data");
@@ -513,7 +527,7 @@ fn main() {
         mbr: mbr,
         bpb: bpb,
         fat32: fat32,
-        selftest: selftest
+        opts: opts
     };
 
     // assert!(data[510] == 0x55);
