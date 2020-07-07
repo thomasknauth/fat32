@@ -5,6 +5,8 @@
 # Generates a file tree. The content of each file is hashed in its
 # file name. The name of a directory is the hash of all its children.
 
+# TODO Implement the part where the directory name is a hash of all its children.
+
 import hashlib
 import os
 import random
@@ -38,7 +40,7 @@ def f(p, n):
             name = p + "/" + str(i)
             with open(name, "wb") as file:
                 command = 'dd if=/dev/urandom of=%s count=%d'
-                count = 10
+                count = random.randint(1,10)
                 os.system(command % (name, count))
             hash = hash_file(name)
             # Security-wise, truncating the hash is insecure. We use
