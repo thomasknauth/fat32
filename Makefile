@@ -45,7 +45,7 @@ test.img:
 # Execute the Rust binary to test the implementation.
 .PHONY: check
 check: target/debug/fat32 test.img
-	$^
+	target/debug/fat32 selftest
 
 .PHONY: clean
 clean:
