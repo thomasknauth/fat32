@@ -834,26 +834,13 @@ fn main() {
         fat32: fat32
     };
 
-    // assert!(data[510] == 0x55);
-    // assert!(data[511] == 0xAA);
     assert!(fat.mbr.sig[0] == 0x55);
     assert!(fat.mbr.sig[1] == 0xAA);
-    
-    // println!("{:?}", fat.mbr.partitions[0]);
-
-    // let mut bpb_data = [0; 36];
-    // f.seek(SeekFrom::Start((512 * fat.mbr.partitions[0].offset_lba) as u64));
-    // f.read_exact(&mut bpb_data).expect("Unable to read bpb data");
-    // let mut bpb: BIOSParameterBlock = unsafe { mem::transmute(bpb_data) };
     
     // FAT12/16 size. Must be zero for FAT32.
     assert!(fat.bpb.total_secs_16 == 0);
     assert!(fat.bpb.secs_per_fat_16 == 0);
     assert!(fat.bpb.total_secs_32 != 0);
-
-    // root_dir_secs = ((
-    // println!("{:?}", str::from_utf8(&bpb.oem_name).unwrap());
-    // println!("{:?}", fat.bpb);
 
     // println!("{:?}", fat.fat32);
     // Can only handle FAT32 major:minor equal to 0:0.
@@ -868,14 +855,13 @@ fn main() {
     // println!("First sector of root directory cluster {:?}",
     //         first_sector_of_cluster(fat.fat32.root_cluster, &fat));
 
-    // Read first sector of root directory
-    // let mut first_data_sec = [0; 512];
-    // let offset = 512 * fat.mbr.partitions[0].offset_lba as u64 +
-    //              first_sector_of_cluster(fat.fat32.root_cluster, &fat) as u64 * 512;
     let root_cluster = fat.fat32.root_cluster;
     match opts.subcmd {
         SubCommand::Info(_t) => {
             println!("{:?}", fat.mbr);
+            println!("{:?}", fat.bpb);
+            println!("{:?}", fat.fat32);
+            println!("Volume label: {}", str::from_utf8(&fat.fat32.vol_label).unwrap());
         },
         SubCommand::Selftest(_t) => {
             let mut action = SelftestCommand {
@@ -905,11 +891,4 @@ fn main() {
             fat.parse_directory(root_cluster, &mut action);
         }
     }
-
-    // let first_fat_entry = (first_data_sec[0] as u32) +
-    //                       ((first_data_sec[1] as u32) << 8) +
-    //                       ((first_data_sec[2] as u32) << 16) +
-    //                       ((first_data_sec[3] as u32) << 24);
-    // print!("{:?},", first_data_sec);
-    // println!("");
 }
