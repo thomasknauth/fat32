@@ -42,10 +42,18 @@ test.img:
 	python3 ./fsck.py /Volumes/NAME
 	hdiutil detach /Volumes/NAME
 
+empty.img:
+	dd if=/dev/zero of=$@ bs=1m count=128
+	DEV=`hdiutil attach -imagekey diskimage-class=CRawDiskImage -nomount $@` && \
+	diskutil eraseDisk FAT32 NAME MBRFormat $$DEV && \
+	hdiutil eject $$DEV
+
 # Execute the Rust binary to test the implementation.
 .PHONY: check
-check: target/debug/fat32 test.img
+check: target/debug/fat32 test.img empty.img
 	target/debug/fat32 selftest
+	cp empty.img testcase_02.img
+	cargo test
 
 .PHONY: clean
 clean:

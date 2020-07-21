@@ -6,3 +6,4 @@ authors = ["Me <user@rust-lang.org>"]
 [dependencies]
 sha2 = "0.8.2"
 clap = "3.0.0-beta.1"
+libc = "0.2"

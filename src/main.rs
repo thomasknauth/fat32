@@ -128,19 +128,19 @@ struct MasterBootRecord {
 
 #[repr(C, packed)]
 #[derive(Debug,Copy,Clone)]
-struct DirEntry {
-   name: [u8; 11],
-   attr: u8,
-   nt_reserved: u8,
-   create_time_tenth: u8,
-   create_time: u16,
-   create_date: u16,
-   last_access_date: u16,
-   first_cluster_high: u16,
-   write_time: u16,
-   write_date: u16,
-   first_cluster_low: u16,
-   file_size: u32
+struct DirEntry {              // offset in bytes
+    name: [u8; 11],            // 0
+    attr: u8,                  // 11
+    nt_reserved: u8,           // 12
+    create_time_tenth: u8,     // 13
+    create_time: u16,          // 14
+    create_date: u16,          // 16
+    last_access_date: u16,     // 18
+    first_cluster_high: u16,   // 20
+    write_time: u16,           // 22
+    write_date: u16,           // 24
+    first_cluster_low: u16,    // 26
+    file_size: u32             // 28
 }
 
 struct Fat32Media {
@@ -209,11 +209,31 @@ impl LongEntry {
     }
 }
 
-// fn is_attr_long_name(e: &DirEntry) -> bool {
-//     return (e.attr & ( ATTR_READ_ONLY | ATTR_HIDDEN | ATTR_SYSTEM | ATTR_VOLUME_ID ));
-// }
-
 impl DirEntry {
+
+    fn new(name: String) -> DirEntry {
+        assert!(name.len() <= 11);
+        // Beware, the date/time format does not record time zone
+        // information! Also, if the system outputs a time outside the
+        // FAT range (1980 - 2100), the system likely uses a different
+        // epoch start to fill the missing date in.
+        let default_date = 0x21; // Jan 1st, 1980
+        let mut x = DirEntry {name: [0x20; 11],
+                              attr: 0,
+                              nt_reserved: 0,
+                              create_time_tenth: 0,
+                              create_time: 0,
+                              create_date: default_date,
+                              last_access_date: default_date,
+                              first_cluster_high: 0,
+                              write_time: 1,
+                              write_date: default_date,
+                              first_cluster_low: 0,
+                              file_size: 0 };
+        x.name[0..name.len()].copy_from_slice(name.as_bytes());
+        return x;
+    }
+
     fn print(&self) {
 
        if (self.attr & ATTR_LONG_NAME_MASK) == ATTR_LONG_NAME {
@@ -260,10 +280,58 @@ impl DirEntry {
         let dot_dot_name : [u8; 11] = [46, 46, 32, 32, 32, 32, 32, 32, 32, 32, 32];
         return self.name == dot_dot_name;
     }
+
+    fn cluster_number(&self) -> u32 {
+        return self.first_cluster_low as u32 + ((self.first_cluster_high as u32) << 16);
+    }
+
+    fn short_name_as_str(&self) -> String {
+        let mut main_part_len: usize = 8;
+
+        for (i, elem) in self.name[0..8].iter().enumerate() {
+            if *elem == 0x20 {
+                    main_part_len = i;
+                    break;
+            }
+        }
+
+        let mut extension_part_len: usize = 3;
+        for (i, elem) in self.name[8..11].iter().enumerate() {
+            if *elem == 0x20 {
+                    extension_part_len = i;
+                    break;
+            }
+        }
+
+        let main_part = str::from_utf8(&self.name[0..main_part_len]).unwrap().to_string();
+        let ext_part = str::from_utf8(&self.name[8..8+extension_part_len]).unwrap().to_string();
+        if ext_part.len() > 0 {
+            return main_part + "." + &ext_part;
+        } else {
+            return main_part;
+        }
+    }
+
+    fn is_free(&self) -> bool {
+        let magic_free_entry_byte: u8 = 0xE5;
+        self.name[0] == magic_free_entry_byte ||
+            self.name[0] == 0x0
+    }
+
+    fn is_free_and_following(&self) -> bool {
+        let magic_free_entry_byte: u8 = 0x0;
+        self.name[0] == magic_free_entry_byte
+    }
+
+    fn to_bytes(&self) -> [u8; 32] {
+        let x: [u8; 32] = unsafe { mem::transmute(*self) };
+        assert_eq!(core::mem::size_of::<Self>(), x.len());
+        return x;
+    }
 }
 
 use std::convert::TryInto;
-use std::fs::File;
+use std::fs::OpenOptions;
 use std::io::prelude::*;
 use std::io::SeekFrom;
 use std::io::{self, Write};
@@ -274,6 +342,8 @@ extern crate clap;
 use clap::Clap;
 extern crate sha2;
 use sha2::{Sha256, Digest};
+
+extern crate libc;
 
 #[derive(Clap)]
 #[clap(version = "0.1", author = "Thomas K.")]
@@ -295,14 +365,18 @@ enum SubCommand {
 }
 
 #[derive(Clap)]
-struct Ls {
-    #[clap(short, default_value = "/")]
+struct Cat {
+    #[clap(short)]
     path: String
 }
 
 #[derive(Clap)]
-struct Cat {
-    #[clap(short)]
+struct Info {
+}
+
+#[derive(Clap)]
+struct Ls {
+    #[clap(short, default_value = "/")]
     path: String
 }
 
@@ -311,11 +385,12 @@ struct ListFsCommand {
 }
 
 #[derive(Clap)]
-struct Selftest {
+struct Mkdir {
+    path: String
 }
 
 #[derive(Clap)]
-struct Info {
+struct Selftest {
 }
 
 fn root_dir_sectors(bpb: &BIOSParameterBlock) -> u32 {
@@ -327,10 +402,6 @@ fn root_dir_sectors(bpb: &BIOSParameterBlock) -> u32 {
 /// Relative to first sector of volume that contains the BIOS Parameter Block
 fn first_data_sector(fat: &Fat32Media) -> u32 {
    return fat.bpb.reserved_sectors as u32 + (fat.fat32.secs_per_fat_32 * fat.bpb.fat_copies as u32) + root_dir_sectors(&fat.bpb);
-}
-
-fn first_sector_of_cluster(n: u32, fat: &Fat32Media) -> u32 {
-   return ((n - 2) * fat.bpb.sectors_per_cluster as u32) + first_data_sector(fat);
 }
 
 fn fat_size(bpb: &BIOSParameterBlock, fat32: &Fat32) -> u32 {
@@ -374,45 +445,7 @@ fn count_of_clusters(bpb: &BIOSParameterBlock, fat32: &Fat32) -> u32 {
 // - https://blog.rust-lang.org/2015/05/11/traits.html
 // - 
 
-/// Visit each element once.
-///
-/// 
-trait Traverse {
-    fn depth_first(&self);
-}
-
-
-impl Traverse for Fat32Media {
-     fn depth_first(&self) {
-         // for each entry E in directory D
-             // if file: print E
-             // else if directory: depth_first(E)
-     }
-}
-
 const FAT32_BYTES_PER_FAT_ENTRY: u32 = 4;
-
-/// Return the FAT32 entry for a given cluster number.
-fn cluster_number_to_fat32_entry(fat: &mut Fat32Media, cluster_nr: u32) -> u32 {
-   let fat_offset: u32 = cluster_nr * FAT32_BYTES_PER_FAT_ENTRY;
-   let sector = fat.bpb.reserved_sectors as u32 + fat_offset / (fat.bpb.bytes_per_sec as u32);
-   let offset = fat_offset % fat.bpb.bytes_per_sec as u32;
-   let mut buf = [0; 4];
-
-   let file_offset = 512 * fat.mbr.partitions[0].offset_lba + sector * 512 + offset;
-   assert!(fat.f.seek(SeekFrom::Start(file_offset.into())).is_ok());
-   fat.f.read_exact(&mut buf).expect("Error reading FAT32 entry.");
-
-   let mut entry: u32 = unsafe { mem::transmute(buf) };
-   entry &= 0x0FFFFFFF;
-   return entry;
-}
-
-impl DirEntry {
-    fn cluster_number(&self) -> u32 {
-        return self.first_cluster_low as u32 + ((self.first_cluster_high as u32) << 16);
-    }
-}
 
 // Most-significant 4 bits of a FAT32 entry are to be ignored.
 fn is_eof(fat_entry: u32) -> bool {
@@ -439,7 +472,14 @@ trait FileAction {
 // List a specific directory.
 struct LsCommand {
     path: String,
-    prefix: String
+    prefix: String,
+    entries: Vec<DirEntry>
+}
+
+impl LsCommand {
+    fn new(path: String) -> LsCommand {
+        LsCommand { path: path, prefix: "/".to_string(), entries: vec![] }
+    }
 }
 
 impl FileAction for LsCommand {
@@ -449,22 +489,27 @@ impl FileAction for LsCommand {
     }
 
     fn handle_file(&mut self, e: &DirEntry) -> FatEntryState {
-        if self.path == self.prefix {
-            e.print();
+        // println!("{}: self.path = {}, self.prefix= {}", line!(), self.path, self.prefix);
+
+        // self.path == self.prefix is true when ls'ing a directory.
+        // self.path == concat(...) is true when ls'ing a file.
+        if (self.path == self.prefix) ||
+            (self.path == concat(&self.prefix, &e.short_name_as_str())) {
+            self.entries.push(*e);
         }
         return FatEntryState::NEXT;
     }
 
     fn handle_dir(&mut self, e: &DirEntry) -> FatEntryState {
-        // println!("self.path = {}, self.prefix= {}", self.path, self.prefix);
+        // println!("{}: self.path = {}, self.prefix= {}", line!(), self.path, self.prefix);
         if self.path == self.prefix {
-            e.print();
+            self.entries.push(*e);
             return FatEntryState::NEXT;
         } else {
             // let path: Vec<&str> = self.path.split('/').collect();
             //if path[1] == e.short_name_as_str() {
             //    self.path = path[1..].join("/");
-            if self.path.starts_with(&[self.prefix.clone(), e.short_name_as_str(), "/".to_string()].concat()) {
+            if self.path.starts_with(&(concat(&self.prefix, &e.short_name_as_str()) + "/")) {
                 return FatEntryState::VISIT;
             } else {
                 return FatEntryState::NEXT;
@@ -474,14 +519,14 @@ impl FileAction for LsCommand {
 
     fn enter(&mut self, dir: DirEntry) {
         self.prefix += &(dir.short_name_as_str() + &"/".to_owned());
-        //println!("enter self.prefix= {}", self.prefix);
+        // println!("enter self.prefix= {}", self.prefix);
     }
 
     fn exit(&mut self) {
         let mut p: Vec<&str> = self.prefix.split('/').collect();
         p.pop();
         self.prefix = p.join("/");
-        //println!("exit self.prefix= {}", self.prefix);
+        // println!("exit self.prefix= {}", self.prefix);
     }
 }
 
@@ -493,7 +538,7 @@ struct CatCommand {
 
 impl FileAction for CatCommand {
     fn consume(&mut self, data: &[u8; 512], size: usize) {
-        io::stdout().write_all(&data[0..size]);
+        assert!(io::stdout().write_all(&data[0..size]).is_ok());
     }
 
     fn handle_file(&mut self, e: &DirEntry) -> FatEntryState {
@@ -594,39 +639,74 @@ impl FileAction for SelftestCommand {
     }
 }
 
-impl DirEntry {
+struct FindCommand {
+    path: String,
+    prefix: String,
+    entry: Option<DirEntry>
+}
 
-    fn short_name_as_str(&self) -> String {
-        let mut main_part_len: usize = 8;
+fn concat(a: &str, b: &str) -> String {
+    if a == "" {
+        return b.to_string();
+    }
+    if a.ends_with(&"/".to_string()) {
+        return [a, b].concat();
+    }
+    return [a, &"/".to_string(), b].concat();
+}
 
-        for (i, elem) in self.name[0..8].iter().enumerate() {
-            if *elem == 0x20 {
-                    main_part_len = i;
-                    break;
-            }
+impl FileAction for FindCommand {
+
+    fn consume(&mut self, _data: &[u8; 512], _size: usize) {
+        panic!("");
+    }
+
+    fn handle_file(&mut self, e: &DirEntry) -> FatEntryState {
+        if self.path == concat(&self.prefix, &e.short_name_as_str()) {
+            assert!(self.entry.is_none());
+            self.entry = Some(*e);
         }
+        return FatEntryState::NEXT;
+    }
 
-        let mut extension_part_len: usize = 3;
-        for (i, elem) in self.name[8..11].iter().enumerate() {
-            if *elem == 0x20 {
-                    extension_part_len = i;
-                    break;
-            }
-        }
-
-        let main_part = str::from_utf8(&self.name[0..main_part_len]).unwrap().to_string();
-        let ext_part = str::from_utf8(&self.name[8..8+extension_part_len]).unwrap().to_string();
-        if ext_part.len() > 0 {
-            return main_part + "." + &ext_part;
+    fn handle_dir(&mut self, e: &DirEntry) -> FatEntryState {
+        println!("self.path = {}, self.prefix= {}", self.path, self.prefix);
+        if self.path == concat(&self.prefix, &e.short_name_as_str()) {
+            assert!(self.entry.is_none());
+            self.entry = Some(*e);
+            return FatEntryState::NEXT;
         } else {
-            return main_part;
+            // let path: Vec<&str> = self.path.split('/').collect();
+            //if path[1] == e.short_name_as_str() {
+            //    self.path = path[1..].join("/");
+            if self.path.starts_with(&(concat(&self.prefix, &e.short_name_as_str()) + "/")) {
+                return FatEntryState::VISIT;
+            } else {
+                return FatEntryState::NEXT;
+            }
         }
     }
+
+    fn enter(&mut self, dir: DirEntry) {
+        self.prefix += &(dir.short_name_as_str() + &"/".to_owned());
+        //println!("enter self.prefix= {}", self.prefix);
+    }
+
+    fn exit(&mut self) {
+        let mut p: Vec<&str> = self.prefix.split('/').collect();
+        p.pop();
+        self.prefix = p.join("/");
+        //println!("exit self.prefix= {}", self.prefix);
+    }
+}
+
+impl DirEntry {
+
 }
 
 struct ClusterItr<'a> {
     fat: &'a mut Fat32Media,
-    cluster_id: u32,
+    entry: FatEntry,
     sector: u32,
 }
 
@@ -635,14 +715,145 @@ struct FileItr<'a> {
     remaining: u32
 }
 
-impl Fat32Media {
+#[repr(C, packed)]
+#[derive(Clone, Copy, Debug)]
+struct FatEntry {
+    val: u32,
+}
 
-    pub fn cluster_iter(&mut self, cluster_id: u32) -> ClusterItr {
-        ClusterItr {fat: self, cluster_id: cluster_id, sector: 0}
+impl FatEntry {
+    fn new(val: u32) -> FatEntry {
+        FatEntry { val: val }
     }
 
-    pub fn file_iter(&mut self, cluster_id: u32, remaining: u32) -> FileItr {
-        FileItr {cluster_itr: ClusterItr {fat: self, cluster_id: cluster_id, sector: 0},
+    fn read(&self) -> u32 {
+        return self.val & 0x0FFFFFFF;
+    }
+
+    fn update(&mut self, new_val: u32) {
+        self.val = (self.val & 0xF0000000) | (new_val & 0x0FFFFFFF);
+    }
+
+    fn is_empty(&self) -> bool {
+        self.read() == 0
+    }
+
+    fn is_end_of_chain(&self) -> bool {
+        self.read() >= 0x0FFFFFF8
+    }
+}
+
+impl PartialEq for FatEntry {
+    fn eq(&self, other: &Self) -> bool {
+        return self.read() == other.read();
+    }
+}
+
+impl Fat32Media {
+
+    fn first_sector_of_cluster(&self, n: u32) -> u32 {
+        return ((n - 2) * self.bpb.sectors_per_cluster as u32) + first_data_sector(self);
+    }
+
+    fn touch(&mut self, path: String) -> Result<DirEntry, i32> {
+        assert!(!path.ends_with("/"));
+
+        // get parent
+        let parent = std::path::Path::new(&path).parent().unwrap();
+        let file_name = std::path::Path::new(&path).file_name().unwrap().to_str().unwrap().to_string();
+        assert!(file_name.len() <= 8);
+        let e = self.get_entry(parent.to_str().unwrap().to_string());
+        if !e.is_some() {
+            return Err(libc::ENOENT);
+        }
+
+        // allocate entry in parent.cluster_id
+        for sector in 0..self.bpb.sectors_per_cluster {
+            let mut data = [0u8; 512];
+
+            self.read_sector_of_cluster(sector, e.unwrap().cluster_number(), &mut data);
+            for i in 0..data.len() / core::mem::size_of::<DirEntry>() {
+                let entry: DirEntry = unsafe {
+                    mem::transmute_copy(&data[core::mem::size_of::<DirEntry>()*i])
+                };
+                // println!("{} {} {:?} is_long= {}", line!(), i, entry, entry.is_long_name());
+
+                if !entry.is_free() {
+                    continue;
+                }
+
+                data[i*32..(i+1)*32].copy_from_slice(&(DirEntry::new(file_name.clone()).to_bytes()));
+                self.write_sector_of_cluster(sector, e.unwrap().cluster_number(), data);
+                return Ok(entry);
+            }
+        }
+
+        // if insufficient space {
+        //     extend cluster chain for cluster id by 1 cluster
+        //     allocate entry in cluster id
+        // }
+        Err(libc::ENOSPC)
+    }
+
+    fn mkdir(&mut self, path: String) -> Result<DirEntry, i32> {
+        // get parent
+        // allocate entry in parent.cluster_id
+        // if insufficient space {
+        //    extend cluster chain for parent.cluster_id by 1 cluster
+        //    allocate entry in parent.cluster_id
+        // }
+        Err(-1)
+    }
+
+    /// Return the FAT32 entry for a given cluster number.
+    fn cluster_number_to_fat32_entry(&mut self, cluster_nr: u32) -> FatEntry {
+        let offset_within_fat: u32 = cluster_nr * FAT32_BYTES_PER_FAT_ENTRY;
+        let sector = self.bpb.reserved_sectors as u32 + offset_within_fat / (self.bpb.bytes_per_sec as u32);
+        let offset_within_sector = offset_within_fat % self.bpb.bytes_per_sec as u32;
+        let mut buf = [0; 4];
+
+        let mut entries: Vec<FatEntry> = vec![];
+        for i in 0..self.bpb.fat_copies {
+            let offset_within_diskimage =
+                512 * (self.mbr.partitions[0].offset_lba + i as u32 * self.fat32.secs_per_fat_32 + sector ) +
+                offset_within_sector;
+            assert!(self.f.seek(SeekFrom::Start(offset_within_diskimage.into())).is_ok());
+            self.f.read_exact(&mut buf).expect("Error reading FAT32 entry.");
+
+            let entry: FatEntry = { unsafe { mem::transmute(buf) } };
+            entries.push(entry);
+        }
+        let first_entry = entries.pop().unwrap();
+        for x in entries.into_iter() {
+            assert_eq!(first_entry, x);
+        }
+
+        return first_entry;
+    }
+
+    fn find_free_fat32_entries(&mut self, count: usize) -> Option<Vec<u32>> {
+        let fat_entry_size: u32 = 4;
+        let sector_size: u32 = 512;
+        let max_cluster_id = sector_size * self.fat32.secs_per_fat_32 / fat_entry_size;
+        let mut entries: Vec<u32> = vec![];
+        for i in 0..max_cluster_id {
+            let entry = self.cluster_number_to_fat32_entry(i);
+            if entry.is_empty() {
+                entries.push(i);
+                if entries.len() == count {
+                    return Some(entries);
+                }
+            }
+        }
+        return None;
+    }
+
+    pub fn cluster_iter(&mut self, entry: FatEntry) -> ClusterItr {
+        ClusterItr {fat: self, entry: entry, sector: 0}
+    }
+
+    pub fn file_iter(&mut self, cluster_id: FatEntry, remaining: u32) -> FileItr {
+        FileItr {cluster_itr: ClusterItr {fat: self, entry: cluster_id, sector: 0},
                  remaining: remaining}
     }
 }
@@ -652,18 +863,18 @@ impl Fat32Media {
 impl Iterator for ClusterItr<'_> {
     type Item = [u8; 512];
     fn next(&mut self) -> Option<Self::Item> {
-        if is_eof(self.cluster_id) {
+        if self.entry.is_end_of_chain() {
             return None
         }
         let mut data = [0; 512];
-        let sector = first_sector_of_cluster(self.cluster_id, &self.fat) + self.sector as u32;
+        let sector = self.fat.first_sector_of_cluster(self.entry.read()) + self.sector as u32;
         let file_offset = 512 * self.fat.mbr.partitions[0].offset_lba as u64 + sector as u64 * 512;
         assert!(self.fat.f.seek(SeekFrom::Start(file_offset.into())).is_ok());
         self.fat.f.read_exact(&mut data).expect("Error reading sector.");
 
         self.sector += 1;
         if self.sector == self.fat.bpb.sectors_per_cluster as u32 {
-            self.cluster_id = cluster_number_to_fat32_entry(&mut self.fat, self.cluster_id);
+            self.entry = self.fat.cluster_number_to_fat32_entry(self.entry.read());
             self.sector = 0;
         }
         Some(data)
@@ -692,15 +903,47 @@ impl Iterator for FileItr<'_> {
 // For FAT32 even the root directory is a variable-sized cluster
 // chain. Read the sectors and follow the chain to visit each
 // directory entry.
-impl Fat32Media {
+impl<'a> Fat32Media {
 
-    fn parse_directory(&mut self, cluster_id: u32, handler: &mut dyn FileAction) {
+    // `filename` of disk image
+    fn new(filename: String) -> Fat32Media {
+        let mut f = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&filename).expect("Unable to open file");
+
+        let mbr: MasterBootRecord = {
+            let mut data = [0; 512];
+            f.read_exact(&mut data).expect("Unable to read data");
+            unsafe { mem::transmute(data) }
+        };
+
+        let bpb: BIOSParameterBlock = {
+            let mut bpb_data = [0; 36];
+            assert!(f.seek(SeekFrom::Start((512 * mbr.partitions[0].offset_lba) as u64)).is_ok());
+            f.read_exact(&mut bpb_data).expect("Unable to read bpb data");
+            unsafe { mem::transmute(bpb_data) }
+        };
+
+        let fat32: Fat32 = {
+            let mut fat32_data = [0; 54];
+            assert!(f.seek(SeekFrom::Start(((512 * mbr.partitions[0].offset_lba) + 36) as u64)).is_ok());
+            f.read_exact(&mut fat32_data).expect("Unable to read fat32 data");
+            unsafe { mem::transmute(fat32_data) }
+        };
+
+        assert!(bpb.bytes_per_sec == 512);
+
+        Fat32Media { f: f, mbr: mbr, bpb: bpb, fat32: fat32, }
+    }
+
+    fn parse_directory(&'a mut self, cluster_id: u32, handler: &mut dyn FileAction) {
 
         let mut long_name: [u16;LONG_NAME_MAX_CHARS] = [0;LONG_NAME_MAX_CHARS];
         let mut visit_dir: Vec<DirEntry> = vec![];
         let mut visit_files: Vec<DirEntry> = vec![];
 
-        for sector_data in self.cluster_iter(cluster_id) {
+        for sector_data in self.cluster_iter(FatEntry::new(cluster_id)) {
             let entries_per_sector = sector_data.len() / core::mem::size_of::<DirEntry>();
             for i in 0..entries_per_sector {
                 let dir_entry: DirEntry = unsafe {
@@ -789,7 +1032,7 @@ impl Fat32Media {
             handler.enter(f);
             // println!("visit_file {:?}", f);
             let mut remaining: usize = f.file_size.try_into().unwrap();
-            for sector_data in self.file_iter(f.cluster_number(), f.file_size) {
+            for sector_data in self.file_iter(FatEntry::new(f.cluster_number()), f.file_size) {
                 assert!(remaining > 0);
                 handler.consume(&sector_data, std::cmp::min(remaining, 512));
                 if remaining >= 512 {
@@ -801,38 +1044,77 @@ impl Fat32Media {
             handler.exit();
         }
     }
+
+    /// Construct a DirEntry with the root directory cluster id.  The
+    /// root directory's cluster id is *not* stored in the File
+    /// Allocate Table.
+    fn root(&self) -> DirEntry {
+        let mut e = DirEntry::new("".to_string());
+        e.first_cluster_low = self.fat32.root_cluster.try_into().unwrap();
+        e
+    }
+
+    /// Returns DirEntry for a given file or directory or None if no
+    /// such entry exists.
+    fn get_entry(&'a mut self, path: String) -> Option<DirEntry> {
+        let p = std::path::Path::new(&path);
+        let mut entry: Option<DirEntry> = Some(self.root());
+
+        for component in p.components() {
+            if component == std::path::Component::RootDir {
+                continue;
+            }
+
+            println!("{} {} {:?}", line!(), entry.unwrap().cluster_number(), component.as_os_str().to_str());
+            entry = self.get_entry_in_dir(entry.unwrap().cluster_number(), component.as_os_str().to_str().unwrap().to_string());
+            println!("{} {:?}", line!(), entry);
+
+            if !entry.is_some() {
+                return None
+            }
+        }
+        return entry;
+    }
+
+    /// Returns DirEntry for a file or directory within a specific directory (cluster_id).
+    fn get_entry_in_dir(&'a mut self, cluster_id: u32, short_name: String) -> Option<DirEntry> {
+        assert!(short_name.len() <= 12);
+        assert!(short_name.contains("/") == false);
+
+        let mut action = FindCommand { path: short_name, prefix: "".to_string(), entry: None };
+        self.parse_directory(cluster_id, &mut action);
+        return action.entry;
+    }
+
+    /// Updates a specific sector of a cluster.
+    fn write_sector_of_cluster(&mut self, sector: u8, cluster: u32, data: [u8; 512]) {
+        assert!(sector < self.bpb.sectors_per_cluster);
+        assert!(cluster < count_of_clusters(&self.bpb, &self.fat32));
+
+        let file_offset = (self.first_sector_of_cluster(cluster) +
+                           sector as u32 + self.mbr.partitions[0].offset_lba) * 512;
+        assert!(self.f.seek(SeekFrom::Start(file_offset.into())).is_ok());
+
+        let mut r = self.f.write_all(&data);
+        assert!(r.is_ok());
+        r = self.f.sync_all();
+        assert!(r.is_ok());
+    }
+
+    fn read_sector_of_cluster(&mut self, sector: u8, cluster: u32, data: &mut [u8; 512]) {
+        let file_offset = (self.first_sector_of_cluster(cluster) +
+                           sector as u32 + self.mbr.partitions[0].offset_lba) * 512;
+        assert!(self.f.seek(SeekFrom::Start(file_offset.into())).is_ok());
+
+        let r = self.f.read_exact(data);
+        assert!(r.is_ok());
+    }
 }
 
 // http://stackoverflow.com/questions/31192956/whats-the-de-facto-way-of-reading-and-writing-files-in-rust-1-x
 fn main() {
     let opts: Opts = Opts::parse();
-
-    let mut f = File::open(&opts.diskimage).expect("Unable to open file");
-    let mbr: MasterBootRecord = {
-       let mut data = [0; 512];
-       f.read_exact(&mut data).expect("Unable to read data");
-       unsafe { mem::transmute(data) }
-    };
-    let bpb = {
-        let mut bpb_data = [0; 36];
-        assert!(f.seek(SeekFrom::Start((512 * mbr.partitions[0].offset_lba) as u64)).is_ok());
-        f.read_exact(&mut bpb_data).expect("Unable to read bpb data");
-        unsafe { mem::transmute(bpb_data) }
-    };
-
-    let fat32: Fat32 = {
-        let mut fat32_data = [0; 54];
-        assert!(f.seek(SeekFrom::Start(((512 * mbr.partitions[0].offset_lba) + 36) as u64)).is_ok());
-        f.read_exact(&mut fat32_data).expect("Unable to read fat32 data");
-        unsafe { mem::transmute(fat32_data) }
-    };
-    
-    let mut fat = Fat32Media {
-        f: f,
-        mbr: mbr,
-        bpb: bpb,
-        fat32: fat32
-    };
+    let mut fat = Fat32Media::new(opts.diskimage);
 
     assert!(fat.mbr.sig[0] == 0x55);
     assert!(fat.mbr.sig[1] == 0xAA);
@@ -857,11 +1139,35 @@ fn main() {
 
     let root_cluster = fat.fat32.root_cluster;
     match opts.subcmd {
+        SubCommand::Cat(t) => {
+            let mut action = CatCommand {
+                path: t.path,
+                prefix: "".to_string()
+            };
+            fat.parse_directory(root_cluster, &mut action);
+        },
         SubCommand::Info(_t) => {
             println!("{:?}", fat.mbr);
             println!("{:?}", fat.bpb);
             println!("{:?}", fat.fat32);
             println!("Volume label: {}", str::from_utf8(&fat.fat32.vol_label).unwrap());
+        },
+        SubCommand::Ls(t) => {
+            let mut action: LsCommand = LsCommand {
+                path: t.path,
+                prefix: "/".to_string(),
+                entries: vec![]
+            };
+            fat.parse_directory(root_cluster, &mut action);
+            for e in &action.entries {
+                e.print();
+            }
+        },
+        SubCommand::ListFsCommand(_t) => {
+            let mut action = ListFs {
+                prefix: vec![]
+            };
+            fat.parse_directory(root_cluster, &mut action);
         },
         SubCommand::Selftest(_t) => {
             let mut action = SelftestCommand {
@@ -870,25 +1176,89 @@ fn main() {
             };
             fat.parse_directory(root_cluster, &mut action);
         },
-        SubCommand::Ls(t) => {
-            let mut action = LsCommand {
-                path: t.path,
-                prefix: "/".to_string()
-            };
-            fat.parse_directory(root_cluster, &mut action);
-        },
-        SubCommand::ListFsCommand(_t) => {
-            let mut action = ListFs {
-                prefix: vec![]
-            };
-            fat.parse_directory(root_cluster, &mut action);
-        },
-        SubCommand::Cat(t) => {
-            let mut action = CatCommand {
-                path: t.path,
-                prefix: "/".to_string()
-            };
-            fat.parse_directory(root_cluster, &mut action);
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::Fat32Media;
+    use LsCommand;
+
+    #[test]
+    fn basics() {
+        let mut fat = Fat32Media::new("test.img".to_string());
+        // let entry = fat.get_entry("0".to_string());;
+        // assert!(entry.is_some());
+        // println!("{:?}", entry.unwrap());
+
+        let entry = fat.get_entry("/0/B4913481".to_string());
+        assert!(entry.is_some());
+
+        // let entry = fat.get_entry_in_dir(fat.fat32.root_cluster, "0".to_string());
+        // assert!(entry.is_some());
+    }
+
+    #[test]
+    fn test_ls_01() {
+        let mut fat = Fat32Media::new("testcase_01.img".to_string());
+        let mut action: LsCommand = LsCommand::new("/".to_string());
+        fat.parse_directory(fat.fat32.root_cluster, &mut action);
+
+        let mut x = action.entries.iter().map(|x| x.short_name_as_str()).collect::<Vec<String>>();
+        x.sort();
+        assert_eq!(x, (0..10).map(|x| x.to_string()).collect::<Vec<String>>());
+        for e in &action.entries {
+            assert!(e.is_directory());
         }
+
+        action = LsCommand::new("/1/".to_string());
+        fat.parse_directory(fat.fat32.root_cluster, &mut action);
+        let x = action.entries.iter().map(|x| x.short_name_as_str()).collect::<Vec<String>>();
+        let expected_entries = ["66EC94BA", "83186062", "590D2E74", "EE45872D", "897965E7", "E4CB5817"].iter().map(|x| x.to_string()).collect::<Vec<String>>();
+        for expected in &expected_entries {
+            assert!(x.contains(expected));
+        }
+
+        action = LsCommand::new("/nonexist/".to_string());
+        fat.parse_directory(fat.fat32.root_cluster, &mut action);
+        assert!(action.entries.is_empty());
+
+        action = LsCommand::new("/4/E9068190".to_string());
+        fat.parse_directory(fat.fat32.root_cluster, &mut action);
+        let x = action.entries.iter().map(|x| x.short_name_as_str()).collect::<Vec<String>>();
+        assert!(x.contains(&"E9068190".to_string()));
+    }
+
+    #[test]
+    fn test_find_free_fat32_entry() {
+        let mut fat = Fat32Media::new("testcase_01.img".to_string());
+        println!("{:?} ", fat.find_free_fat32_entries(10));
+        println!("FAT[0]= {:X?} ", fat.cluster_number_to_fat32_entry(0));
+        println!("FAT[1]= {:X?} ", fat.cluster_number_to_fat32_entry(1));
+    }
+
+    use DirEntry;
+    #[test]
+    #[should_panic]
+    fn test_DirEntry_new() {
+        let e = DirEntry::new("thisnameistoolong".to_string());
+    }
+
+    #[test]
+    fn test_touch() {
+        let mut fat = Fat32Media::new("testcase_02.img".to_string());
+        assert_eq!(fat.touch("/0/1".to_string()).unwrap_err(), libc::ENOENT);
+        // On OSX, the newly formatted volume can hold 13 additional
+        // entries in its root directory before we need to allocate a
+        // new cluster. Each 512 byte sector can hold 16 `DirEntry`
+        // entries. One entry is occopied by the VOLUME_ID. Two more
+        // entries (one long!) are occupied by the FSEVEN~1 directory
+        // which gets automatically created by OSX. Hence, we can
+        // create 13 more entries, we need to allocate a new cluster
+        // to hold additional entries.
+        for i in 0..13 {
+            assert!(fat.touch("/".to_string()+&i.to_string()).is_ok());
+        }
+        assert_eq!(fat.touch("/14".to_string()).unwrap_err(), libc::ENOSPC);
     }
 }
