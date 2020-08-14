@@ -35,7 +35,7 @@ blah:
 
 # Create a disk image for testing. Assumes OSX as the platform.
 test.img:
-	dd if=/dev/zero of=$@ bs=1m count=128
+	dd if=/dev/zero of=$@ bs=1m count=128 conv=sparse
 	DEV=`hdiutil attach -imagekey diskimage-class=CRawDiskImage -nomount $@` && \
 	diskutil eraseDisk FAT32 NAME MBRFormat $$DEV && \
 	hdiutil mount $$DEV
@@ -53,7 +53,8 @@ empty.img:
 check: target/debug/fat32 test.img empty.img
 	target/debug/fat32 selftest
 	cp empty.img testcase_02.img
-	cargo test
+	cp empty.img testcase_03.img
+	cargo test -- --nocapture
 
 .PHONY: clean
 clean:
