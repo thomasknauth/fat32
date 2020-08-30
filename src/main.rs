@@ -155,8 +155,11 @@ struct MasterBootRecord {
     sig: [u8; 2]
 }
 
+/// Size of a DirEntry in bytes.
+const DIR_ENTRY_SIZE: usize = 32;
+
 #[repr(C, packed)]
-#[derive(Debug,Copy,Clone)]
+#[derive(Debug,Copy,Clone,PartialEq)]
 struct DirEntry {              // offset in bytes
     name: [u8; 11],            // 0
     attr: u8,                  // 11
@@ -172,6 +175,7 @@ struct DirEntry {              // offset in bytes
     file_size: u32,            // 28
 }
 
+#[derive(Clone, Debug)]
 struct HybridEntry {
     e: DirEntry,
     long_name: String
@@ -240,7 +244,7 @@ const FAT_END_OF_CHAIN: u32 = 0x0FFFFFF8;
 // character is encoded in 2 bytes (UTF16), this makes 13 characters
 // per long entry.
 
-#[repr(C, packed)]
+//#[repr(C, packed)]
 #[derive(Debug,Copy,Clone)]
 struct LongEntry { // offset (byte)
   ord:u8,          // 0
@@ -259,7 +263,7 @@ impl LongEntry {
         LongEntry {
             ord: 0,
             name1: [0,0,0,0,0],
-            attr: 0,
+            attr: ATTR_LONG_NAME,
             dir_type: 0,
             checksum: 0,
             name2: [0,0,0,0,0,0],
@@ -269,9 +273,9 @@ impl LongEntry {
     }
 
     fn set_char(&mut self, idx: usize, b: u16) {
-        assert!(idx >= 0 && idx < self.name1.len() + self.name2.len() + self.name3.len());
+        assert!(idx < self.name1.len() + self.name2.len() + self.name3.len());
 
-        if idx >= 0 && idx < self.name1.len() {
+        if idx < self.name1.len() {
             self.name1[idx] = b;
         } else if idx >= self.name1.len() && idx < self.name1.len() + self.name2.len() {
             self.name2[idx-self.name1.len()] = b;
@@ -293,7 +297,24 @@ impl LongEntry {
     }
 
     fn to_bytes(&self) -> [u8; 32] {
-        let x: [u8; 32] = unsafe { mem::transmute(*self) };
+        let mut x: [u8; DIR_ENTRY_SIZE] = [0u8; DIR_ENTRY_SIZE];
+        let off: usize = 0;
+        x[0] = self.ord;
+        for i in 0..5 {
+            let y = self.name1[i].to_le_bytes();
+            x[(1+i*2)..1+(i+1)*2].copy_from_slice(&y);
+        }
+        x[11] = self.attr;
+        x[12] = self.dir_type;
+        x[13] = self.checksum;
+        for i in 0..6 {
+            let y = self.name2[i].to_le_bytes();
+            x[(14+i*2)..14+(i+1)*2].copy_from_slice(&y);
+        }
+        x[26] = self.unused[0];
+        x[27] = self.unused[1];
+        x[28..30].copy_from_slice(&self.name3[0].to_le_bytes());
+        x[30..32].copy_from_slice(&self.name3[1].to_le_bytes());
         return x;
     }
     
@@ -317,18 +338,80 @@ impl LongEntry {
 
         return n;
     }
+
+    /// Populate long entry from raw bytes.
+    fn from_bytes(raw: &[u8]) -> Option<LongEntry> {
+        let mut e = LongEntry::new();
+
+        let mut r = raw.split_at(1);
+        e.ord = u8::from_le_bytes(r.0.try_into().unwrap());
+        for i in 0..5 {
+            r = r.1.split_at(2);
+            e.name1[i] = u16::from_le_bytes(r.0.try_into().unwrap());
+        }
+        r = r.1.split_at(1);
+        e.attr = u8::from_le_bytes(r.0.try_into().unwrap());
+        r = r.1.split_at(1);
+        e.dir_type = u8::from_le_bytes(r.0.try_into().unwrap());
+        r = r.1.split_at(1);
+        e.checksum = u8::from_le_bytes(r.0.try_into().unwrap());
+        for i in 0..6 {
+            r = r.1.split_at(2);
+            e.name2[i] = u16::from_le_bytes(r.0.try_into().unwrap());
+        }
+        for i in 0..2 {
+            r = r.1.split_at(1);
+            e.unused[i] = u8::from_le_bytes(r.0.try_into().unwrap());
+        }
+        for i in 0..2 {
+            r = r.1.split_at(2);
+            e.name3[i] = u16::from_le_bytes(r.0.try_into().unwrap());
+        }
+        return Some(e);
+    }
+
+    fn to_string(&self) -> String {
+        let n = self.name();
+        let mut name_len = n.len();
+        for (idx, chr) in n.iter().enumerate() {
+            if *chr == 0x0 {
+                name_len = idx;
+                break;
+            }
+        }
+        return String::from_utf16(&n[0..name_len]).unwrap();
+    }
+
+    fn is_last_long_entry(&self) -> bool {
+        (self.ord & LAST_LONG_ENTRY) != 0
+    }
 }
 
 impl DirEntry {
 
+    fn default() -> DirEntry {
+        // Beware, the date/time format does not record time zone
+        // information! Also, if the system outputs a time outside the
+        // FAT range (1980 - 2100), the system likely uses a different
+        // epoch start to fill the missing date in.
+        let default_date = 0x21; // Jan 1st, 1980
+        DirEntry {name: [FREE_ENTRY_MARKER; 11],
+                  attr: 0,
+                  nt_reserved: 0,
+                  create_time_tenth: 0,
+                  create_time: 0,
+                  create_date: default_date,
+                  last_access_date: default_date,
+                  first_cluster_high: 0,
+                  write_time: 1,
+                  write_date: default_date,
+                  first_cluster_low: 0,
+                  file_size: 0 }
+    }
+
+    // @param name File name in human readable format, e.g., "LETTER01.DOC".
     fn new(name: String) -> DirEntry {
-        assert!(name.len() <= 11);
-        for c in name.chars() {
-            assert!(c.is_ascii());
-            if c.is_alphabetic() {
-                assert!(c.is_ascii_uppercase());
-            }
-        }
+        assert!(is_valid_short_name(&name));
 
         // Beware, the date/time format does not record time zone
         // information! Also, if the system outputs a time outside the
@@ -347,31 +430,37 @@ impl DirEntry {
                               write_date: default_date,
                               first_cluster_low: 0,
                               file_size: 0 };
-        x.name[0..name.len()].copy_from_slice(name.as_bytes());
+
+        x.name.copy_from_slice(&short_name_to_bytes(&name));
         return x;
     }
 
-    fn print(&self) {
-
-       if (self.attr & ATTR_LONG_NAME_MASK) == ATTR_LONG_NAME {
-           println!("ATTR_LONG_NAME");
-       }
-       if (self.attr & ATTR_LONG_NAME_MASK) != ATTR_LONG_NAME && self.name[0] != FREE_ENTRY_MARKER {
-           if (self.attr & (ATTR_DIRECTORY | ATTR_VOLUME_ID)) == 0x00 {
-               // Create a local copy to prevent "warning: borrow of
-               // packed field is unsafe and requires unsafe function or
-               // block (error E0133)"
-               let file_size = self.file_size;
-               let attr = self.attr;
-               println!("{} [size {} byte(s), attr {}, 1st cluster #: {}]", self.short_name_as_str(), file_size, attr, self.cluster_number());
-           } else if (self.attr & (ATTR_DIRECTORY | ATTR_VOLUME_ID)) == ATTR_DIRECTORY {
-               println!("{} (dir), cluster #: {}", self.short_name_as_str(), self.cluster_number());
-           } else if (self.attr & (ATTR_DIRECTORY | ATTR_VOLUME_ID)) == ATTR_VOLUME_ID {
-               println!("Volume name is {}", self.short_name_as_str());
-           } else {
-               println!("Invalid entry");
-           }
+    fn print(&self) -> String {
+        let mut s = String::new();
+        
+        if (self.attr & ATTR_LONG_NAME_MASK) == ATTR_LONG_NAME {
+            s.push_str("ATTR_LONG_NAME\n");
         }
+        if (self.attr & ATTR_LONG_NAME_MASK) != ATTR_LONG_NAME && self.name[0] != FREE_ENTRY_MARKER {
+            if (self.attr & (ATTR_DIRECTORY | ATTR_VOLUME_ID)) == 0x00 {
+                // Create a local copy to prevent "warning: borrow of
+                // packed field is unsafe and requires unsafe function or
+                // block (error E0133)"
+                let file_size = self.file_size;
+                let attr = self.attr;
+                s.push_str(&format!("{} [size {} byte(s), attr {}, 1st cluster #: {}]\n",
+                               self.short_name_as_str(), file_size, attr, self.cluster_number()));
+            } else if (self.attr & (ATTR_DIRECTORY | ATTR_VOLUME_ID)) == ATTR_DIRECTORY {
+                s.push_str(&format!("{} {:X?} (dir), cluster #: {}\n",
+                               self.short_name_as_str(), self.name, self.cluster_number()));
+            } else if (self.attr & (ATTR_DIRECTORY | ATTR_VOLUME_ID)) == ATTR_VOLUME_ID {
+                s.push_str(&format!("Volume name is {}\n", self.short_name_as_str()));
+            } else {
+                s.push_str(&format!("Invalid entry\n"));
+            }
+        }
+        
+        return s;
     }
 
     fn is_file(&self) -> bool {
@@ -466,16 +555,61 @@ impl DirEntry {
         }
         sum
     }
-    
+
+    /// Serialize into a short entry.
     fn to_bytes(&self) -> [u8; 32] {
         let x: [u8; 32] = unsafe { mem::transmute(*self) };
         assert_eq!(core::mem::size_of::<Self>(), x.len());
         return x;
     }
+
+    /// Populate short entry from raw bytes.
+    fn from_bytes_short(raw: &[u8]) -> Option<DirEntry> {
+        let mut e = DirEntry::default();
+        
+        let mut r = raw.split_at(11);
+        e.name.copy_from_slice(r.0);
+        r = r.1.split_at(1);
+        e.attr = u8::from_le_bytes(r.0.try_into().unwrap());
+        r = r.1.split_at(1);
+        e.nt_reserved = u8::from_le_bytes(r.0.try_into().unwrap());
+        r = r.1.split_at(1);
+        e.create_time_tenth = u8::from_le_bytes(r.0.try_into().unwrap());
+        r = r.1.split_at(2);
+        e.create_time = u16::from_le_bytes(r.0.try_into().unwrap());
+        r = r.1.split_at(2);
+        e.create_date = u16::from_le_bytes(r.0.try_into().unwrap());
+        r = r.1.split_at(2);
+        e.last_access_date = u16::from_le_bytes(r.0.try_into().unwrap());
+        r = r.1.split_at(2);
+        e.first_cluster_high = u16::from_le_bytes(r.0.try_into().unwrap());
+        r = r.1.split_at(2);
+        e.write_time = u16::from_le_bytes(r.0.try_into().unwrap());
+        r = r.1.split_at(2);
+        e.write_date = u16::from_le_bytes(r.0.try_into().unwrap());
+        r = r.1.split_at(2);
+        e.first_cluster_low = u16::from_le_bytes(r.0.try_into().unwrap());
+        r = r.1.split_at(4);
+        e.file_size = u32::from_le_bytes(r.0.try_into().unwrap());
+
+        return Some(e);
+    }
 }
 
 impl HybridEntry {
 
+    fn from_name(name: &str) -> Option<HybridEntry> {
+        if is_valid_short_name(name) {
+            return Some(HybridEntry::from_short(&DirEntry::new(name.to_string())));
+        } else if is_valid_long_name(name) {
+            return Some(HybridEntry {
+                e: DirEntry::default(),
+                long_name: name.to_string()
+            });
+        }
+        return None;
+    }
+    
     // Serialize the entry. Produces zero or more `LongEntry`s and the
     // corresponding `DirEntry`. Since the output size is unknown,
     // return a vector of `u8`s.
@@ -489,7 +623,8 @@ impl HybridEntry {
         for (i, b) in self.long_name.encode_utf16().enumerate() {
             if (i % 13) == 0 {
                 long_entries.insert(0, LongEntry::new());
-                long_entries.get_mut(0).unwrap().ord = ((i / 13) + 1).try_into().unwrap();;
+                long_entries.get_mut(0).unwrap().checksum = self.e.checksum();
+                long_entries.get_mut(0).unwrap().ord = ((i / 13) + 1).try_into().unwrap();
             }
             long_entries.get_mut(0).unwrap().set_char(i%13, b);
         }
@@ -504,16 +639,100 @@ impl HybridEntry {
         bytes.extend(self.e.to_bytes().iter());
         return bytes;
     }
+
+    fn new(name: &str) -> HybridEntry {
+
+        let mut e = HybridEntry {
+            e: DirEntry::default(),
+            long_name: String::new()
+        };
+        
+        if is_valid_short_name(name) {
+            e.e.name.copy_from_slice(&short_name_to_bytes(name));
+        } else {
+            assert!(is_valid_long_name(name));
+            e.e.name.copy_from_slice(&gen_short_name(name, &vec![]).unwrap());
+            e.long_name = name.to_string();
+        }
+        return e;
+    }
+
+    fn from_short(e: &DirEntry) -> HybridEntry {
+        HybridEntry { e: *e, long_name: String::new() }
+    }
+
+    fn print(&self) -> String {
+        let mut s = String::new();
+        // s.push_str(&self.e.print());
+        if self.long_name.len() > 0 {
+            s.push_str(&format!("{} [{}]", self.long_name, self.e.short_name_as_str()));
+        } else {
+            s.push_str(&self.e.short_name_as_str());
+        }
+        if self.e.is_directory() {
+            s.push_str("/");
+        }
+        if self.e.is_file() {
+            s.push_str(&format!(" size {} byte(s)", self.e.file_size));
+        }
+        s.push_str("\n");
+        return s;
+    }
+}
+
+/// TODO Relax the currently too restrictive implementation.
+fn is_valid_long_name(name: &str) -> bool {
+
+    if !name.is_ascii() {
+        return false;
+    }
+
+    // This check is correct only iff the previous check asserted the
+    // name only has ASCII characters.
+    if name.len() > 255 {
+        return false;
+    }
+
+    if !name.chars().all(|b| b.is_ascii() && (b.is_alphanumeric() || b == '.' || b == ' ')) {
+        return false;
+    }
+
+    return true;
+}
+
+fn short_name_to_bytes(name: &str) -> [u8; 11] {
+    assert!(is_valid_short_name(name));
+    let tokens = name.split(".").collect::<Vec<&str>>();
+    let mut r = [b' '; 11];
+    for (idx, byte) in tokens[0].as_bytes().iter().enumerate() {
+        r[idx] = *byte;
+    }
+
+    if tokens.len() == 1 {
+        return r;
+    }
+
+    for (idx, byte) in tokens[1].as_bytes().iter().enumerate() {
+        r[idx+8] = *byte;
+    }
+    
+    return r;
+}
+
+fn short_name_as_str(bytes: &[u8; 11]) -> String {
+
+    let mut s = String::from_utf8(bytes[0..8].to_vec()).unwrap().trim_end_matches(' ').to_string();
+    let suffix = String::from_utf8(bytes[8..11].to_vec()).unwrap().trim_end_matches(' ').to_string();
+    if suffix.len() > 0 {
+        s.push('.');
+        s.push_str(&suffix);
+    }
+    return s;
 }
 
 fn gen_short_name(long_name: &str, existing: &Vec<String>) -> Option<[u8;11]> {
 
-    if !long_name.is_ascii() {
-        return None;
-    }
-
-    // let allowed_special_chars = "$%'-_@~`!(){}^#&".to_string();
-    if !long_name.chars().all(|b| b.is_ascii() && (b.is_alphanumeric() || b == '.' || b == ' ')) {
+    if !is_valid_long_name(long_name) {
         return None;
     }
     
@@ -524,19 +743,27 @@ fn gen_short_name(long_name: &str, existing: &Vec<String>) -> Option<[u8;11]> {
     let spaces_removed = upper_cased_name.replace(" ", "");
     let no_leading_periods = spaces_removed.trim_start_matches(".");
 
-    let mut basis = [0u8; 11];
+    let mut basis = [b' '; 11];
     let mut copied = 0;
-    for c in no_leading_periods.as_bytes().iter() {
+    let mut truncated = false;
+    let last_dot_idx = match no_leading_periods.rfind('.') {
+        Some(x) => x,
+        None => no_leading_periods.len()
+    };
+    
+    for c in no_leading_periods[0..last_dot_idx].as_bytes().iter() {
+
+        if copied == 8 {
+            truncated = true;
+            break;
+        }
+
         if *c == b'.' {
             continue;
         }
 
         basis[copied] = *c;
         copied += 1;
-
-        if copied == 8 {
-            break;
-        }
     }
 
     match no_leading_periods.rfind(".") {
@@ -548,8 +775,15 @@ fn gen_short_name(long_name: &str, existing: &Vec<String>) -> Option<[u8;11]> {
         None => (),
     };
 
+    if truncated {
+        basis[6] = b'~';
+        basis[7] = b'1';
+    }
+    
+    // TODO Take existing names into account to avoid clashing short
+    // names.
     if !existing.is_empty() {
-        panic!("not implemented");
+        unimplemented!();
     }
     
     return Some(basis);
@@ -569,6 +803,10 @@ extern crate sha2;
 use sha2::{Sha256, Digest};
 
 extern crate libc;
+
+extern crate rand;
+use rand::Rng;
+use rand::distributions::Alphanumeric;
 
 #[derive(Clap)]
 #[clap(version = "0.1", author = "Thomas K.")]
@@ -685,11 +923,11 @@ trait FileAction {
     // All of a file's bytes pass through this.
     fn consume(&mut self, data: &[u8; 512], size: usize);
 
-    fn handle_file(&mut self, e: &DirEntry) -> FatEntryState;
-    fn handle_dir(&mut self, e: &DirEntry) -> FatEntryState;
+    fn handle_file(&mut self, e: &HybridEntry) -> FatEntryState;
+    fn handle_dir(&mut self, e: &HybridEntry) -> FatEntryState;
 
     // Called when descending down a directory.
-    fn enter(&mut self, e: DirEntry);
+    fn enter(&mut self, e: &HybridEntry);
     // Called when ascending from a directory.
     fn exit(&mut self);
 }
@@ -698,7 +936,7 @@ trait FileAction {
 struct LsCommand {
     path: String,
     prefix: String,
-    entries: Vec<DirEntry>
+    entries: Vec<HybridEntry>
 }
 
 impl LsCommand {
@@ -713,28 +951,28 @@ impl FileAction for LsCommand {
         panic!("");
     }
 
-    fn handle_file(&mut self, e: &DirEntry) -> FatEntryState {
+    fn handle_file(&mut self, e: &HybridEntry) -> FatEntryState {
         // println!("{}: self.path = {}, self.prefix= {}", line!(), self.path, self.prefix);
 
         // self.path == self.prefix is true when ls'ing a directory.
         // self.path == concat(...) is true when ls'ing a file.
         if (self.path == self.prefix) ||
-            (self.path == concat(&self.prefix, &e.short_name_as_str())) {
-            self.entries.push(*e);
+            (self.path == concat(&self.prefix, &e.e.short_name_as_str())) {
+            self.entries.push(e.clone());
         }
         return FatEntryState::NEXT;
     }
 
-    fn handle_dir(&mut self, e: &DirEntry) -> FatEntryState {
+    fn handle_dir(&mut self, e: &HybridEntry) -> FatEntryState {
         // println!("{}: self.path = {}, self.prefix= {}", line!(), self.path, self.prefix);
         if self.path == self.prefix {
-            self.entries.push(*e);
+            self.entries.push(e.clone());
             return FatEntryState::NEXT;
         } else {
             // let path: Vec<&str> = self.path.split('/').collect();
             //if path[1] == e.short_name_as_str() {
             //    self.path = path[1..].join("/");
-            if self.path.starts_with(&(concat(&self.prefix, &e.short_name_as_str()) + "/")) {
+            if self.path.starts_with(&(concat(&self.prefix, &e.e.short_name_as_str()) + "/")) {
                 return FatEntryState::VISIT;
             } else {
                 return FatEntryState::NEXT;
@@ -742,8 +980,8 @@ impl FileAction for LsCommand {
         }
     }
 
-    fn enter(&mut self, dir: DirEntry) {
-        self.prefix += &(dir.short_name_as_str() + &"/".to_owned());
+    fn enter(&mut self, dir: &HybridEntry) {
+        self.prefix += &(dir.e.short_name_as_str() + &"/".to_owned());
         // println!("enter self.prefix= {}", self.prefix);
     }
 
@@ -765,19 +1003,22 @@ impl FileAction for ListFs {
         panic!("");
     }
 
-    fn handle_file(&mut self, e: &DirEntry) -> FatEntryState {
+    fn handle_file(&mut self, e: &HybridEntry) -> FatEntryState {
         for x in &self.prefix {
             print!("{}/", x);
         }
-        e.print();
+        print!("{}", e.print());
         return FatEntryState::NEXT;
     }
-    fn handle_dir(&mut self, e: &DirEntry) -> FatEntryState {
-        e.print();
+    fn handle_dir(&mut self, e: &HybridEntry) -> FatEntryState {
+        for x in &self.prefix {
+            print!("{}/", x);
+        }
+        print!("{}", e.print());
         return FatEntryState::VISIT;
     }
-    fn enter(&mut self, dir: DirEntry) {
-        self.prefix.push(dir.short_name_as_str());
+    fn enter(&mut self, dir: &HybridEntry) {
+        self.prefix.push(dir.e.short_name_as_str());
     }
     fn exit(&mut self) {
         self.prefix.pop();
@@ -785,7 +1026,7 @@ impl FileAction for ListFs {
 }
 
 struct SelftestCommand {
-    prefix: Vec<DirEntry>,
+    prefix: Vec<HybridEntry>,
     hasher: Sha256
 }
 
@@ -795,11 +1036,13 @@ impl FileAction for SelftestCommand {
         self.hasher.input(data[..size].as_ref());
     }
 
-    fn handle_file(&mut self, entry: &DirEntry) -> FatEntryState {
+    fn handle_file(&mut self, entry: &HybridEntry) -> FatEntryState {
+        println!("{} SelftestCommand::handle_file()", line!());
+        
         // On OSX, some services create files on the volume in the
         // background, e.g., the file system indexer. Ignore
         // files, that do not consist of 8 hexadecimal characters.
-        for c in entry.short_name_as_str().chars() {
+        for c in entry.e.short_name_as_str().chars() {
             if !c.is_digit(16) {
                 return FatEntryState::NEXT;
             }
@@ -807,17 +1050,17 @@ impl FileAction for SelftestCommand {
         return FatEntryState::VISIT;
     }
 
-    fn handle_dir(&mut self, _e: &DirEntry) -> FatEntryState {
+    fn handle_dir(&mut self, _e: &HybridEntry) -> FatEntryState {
         return FatEntryState::VISIT;
     }
 
-    fn enter(&mut self, name: DirEntry) {
-        println!("enter: {}", name.short_name_as_str());
-        self.prefix.push(name);
+    fn enter(&mut self, name: &HybridEntry) {
+        println!("enter: {}", name.e.short_name_as_str());
+        self.prefix.push(name.clone());
     }
 
     fn exit(&mut self) {
-        let entry = self.prefix.pop().unwrap();
+        let entry = self.prefix.pop().unwrap().e;
         println!("exit: {}", entry.short_name_as_str());
         if entry.is_file() {
             let old_hasher = mem::replace(&mut self.hasher, Sha256::new());
@@ -832,7 +1075,7 @@ impl FileAction for SelftestCommand {
 struct FindCommand {
     path: String,
     prefix: String,
-    entry: Option<DirEntry>
+    entry: Option<HybridEntry>
 }
 
 fn concat(a: &str, b: &str) -> String {
@@ -851,27 +1094,30 @@ impl FileAction for FindCommand {
         panic!("");
     }
 
-    fn handle_file(&mut self, e: &DirEntry) -> FatEntryState {
-        if self.path == concat(&self.prefix, &e.short_name_as_str()) {
+    fn handle_file(&mut self, e: &HybridEntry) -> FatEntryState {
+        if self.path == concat(&self.prefix, &e.e.short_name_as_str()) ||
+            self.path == concat(&self.prefix, &e.long_name) {
             assert!(self.entry.is_none());
-            self.entry = Some(*e);
+            self.entry = Some(e.clone());
         }
         return FatEntryState::NEXT;
     }
 
-    fn handle_dir(&mut self, e: &DirEntry) -> FatEntryState {
+    fn handle_dir(&mut self, e: &HybridEntry) -> FatEntryState {
         // println!("fn handle_dir(), line= {}, self.path = {}, self.prefix= {}",
         //          line!(), self.path, self.prefix);
 
-        if self.path == concat(&self.prefix, &e.short_name_as_str()) {
+        if self.path == concat(&self.prefix, &e.e.short_name_as_str()) ||
+            self.path == concat(&self.prefix, &e.long_name) {
             assert!(self.entry.is_none());
-            self.entry = Some(*e);
+            self.entry = Some(e.clone());
             return FatEntryState::NEXT;
         } else {
             // let path: Vec<&str> = self.path.split('/').collect();
             //if path[1] == e.short_name_as_str() {
             //    self.path = path[1..].join("/");
-            if self.path.starts_with(&(concat(&self.prefix, &e.short_name_as_str()) + "/")) {
+                if self.path.starts_with(&(concat(&self.prefix, &e.e.short_name_as_str()) + "/")) ||
+                    self.path.starts_with(&(concat(&self.prefix, &e.long_name) + "/")) {
                 return FatEntryState::VISIT;
             } else {
                 return FatEntryState::NEXT;
@@ -879,8 +1125,8 @@ impl FileAction for FindCommand {
         }
     }
 
-    fn enter(&mut self, dir: DirEntry) {
-        self.prefix += &(dir.short_name_as_str() + &"/".to_owned());
+    fn enter(&mut self, dir: &HybridEntry) {
+        self.prefix += &(dir.e.short_name_as_str() + &"/".to_owned());
         //println!("enter self.prefix= {}", self.prefix);
     }
 
@@ -909,23 +1155,74 @@ struct DirEntryItr<'a> {
     idx: usize,
 }
 
+/// Iterator over directory entries. Combines long entries and short
+/// entry into one `HybridEntry`. Other entries, e.g., free and volume
+/// name, are returned as is.
 impl Iterator for DirEntryItr<'_> {
-    type Item = DirEntry;
+    type Item = (std::ops::Range<usize>, HybridEntry);
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.idx >= self.data.len() / core::mem::size_of::<Self::Item>() {
-            match self.cluster_itr.next() {
-                Some(x) => self.data = x,
-                None => return None
+        let mut long_name = String::new();
+        let mut prev_ord  = 0u8;
+        let mut checksum  = 0u8;
+
+        loop {
+            if self.idx >= self.data.len() / DIR_ENTRY_SIZE {
+                match self.cluster_itr.next() {
+                    Some(x) => self.data = x,
+                    None => return None
+                }
+                println!("{}, DirEntryItr::next(), next cluster", line!());
+                self.idx = 0;
             }
-            println!("{} next cluster", line!());
-            self.idx = 0;
+
+            let idx = self.idx;
+            let slice = &self.data[DIR_ENTRY_SIZE*idx..DIR_ENTRY_SIZE*(idx+1)];
+            self.idx += 1;
+            
+            let short = DirEntry::from_bytes_short(slice).unwrap();
+            println!("{}, DirEntryItr::next(), short={:X?}", line!(), short);
+            if short.is_free() {
+                assert!(long_name.len() == 0);
+                return Some((idx..idx+1,
+                             HybridEntry::from_short(&short)));
+            }
+
+            if !short.is_long_name() {
+                if long_name.len() == 0 {
+                    return Some((idx..idx+1,
+                                 HybridEntry::from_short(&short)));
+                }
+                assert!(short.checksum() == checksum);
+                    return Some((idx-round_up_div(long_name.len() as u64, 13) as usize..idx+1,
+                                 HybridEntry {e: short, long_name: long_name}));
+            }
+
+            let long = LongEntry::from_bytes(slice).unwrap();
+            // On first long entry, `long_name` must be empty.
+            println!("{}, DirEntryItr::next(), long={:X?}", line!(), long);
+
+            if long.is_last_long_entry() {
+                assert!(long_name.len() == 0);
+                assert!(checksum == 0);
+                assert!(prev_ord == 0);
+                checksum = long.checksum;
+            } else {
+                // On all but the first long entry in a chain,
+                // `long_name` must be non-empty.
+                assert!(long_name.len() != 0);
+                // On all but the first long entry in a chain,
+                // `long.ord` must be one less than previous long
+                // entry's ord.
+                assert!(long.ord == prev_ord - 1);
+            }
+            
+            long_name.insert_str(0, &long.to_string());
+
+            assert!(long.checksum == checksum);
+
+            prev_ord = long.ord & LONG_ENTRY_ORD_MASK;
         }
-        let entry: DirEntry = unsafe {
-            mem::transmute_copy(&self.data[core::mem::size_of::<DirEntry>()*self.idx])
-        };
-        self.idx += 1;
-        Some(entry)
     }
 }
 
@@ -970,6 +1267,7 @@ enum Errno {
 
 /// If `dividend` is not an exact multiple of `divisor`, always round
 /// up to nearest integer. For example, 6 / 3 = 2 and 5 / 2 = 3.
+// fn round_up_div<T: std::ops::Add<Output = T> + std::ops::Sub<Output = T>>(dividend: T, divisor: T) -> T {
 fn round_up_div(dividend: u64, divisor: u64) -> u64 {
     (dividend + divisor - 1) / divisor
 }
@@ -994,6 +1292,12 @@ fn is_valid_short_name(name: &str) -> bool {
             return false;
         }
     }
+
+    if !name.chars().all(|c| (c.is_ascii_alphabetic() && c.is_ascii_uppercase()) ||
+                         c.is_ascii_digit() || c == '.' || c == '~') {
+        return false;
+    }
+    
     return true;
 }
 
@@ -1007,23 +1311,28 @@ impl Fat32Media {
     /// index within the directory at which the entry was written. The
     /// index can be used with Fat32Media::write_dir_entry() to update
     /// the entry later (cf. Fat32Media::cp()).
-    fn touch(&mut self, path: &str) -> Result<DirEntry, Errno> {
+    fn touch(&mut self, path: &str) -> Result<HybridEntry, Errno> {
         assert!(!path.ends_with("/"));
 
         // get parent
         let parent = std::path::Path::new(&path).parent().unwrap();
         let file_name = std::path::Path::new(&path).file_name().unwrap().to_str().unwrap().to_string();
-        assert!(is_valid_short_name(&file_name));
-        let e = self.get_entry(&parent.to_str().unwrap().to_string());
-        if !e.is_some() {
-            return Err(Errno::ENOENT);
-        }
 
-        let cluster = e.unwrap().cluster_number();
-        let new_entry = DirEntry::new(file_name);
-        self.add_dir_entry(cluster, new_entry);
-        self.f.sync_all().expect("");
-        return Ok(new_entry);
+        let e = self.get_entry(&parent.to_str().unwrap().to_string());
+        let cluster = match e {
+            None => return Err(Errno::ENOENT),
+            Some(x) => x.e.cluster_number()
+        };
+
+        let new_entry = match HybridEntry::from_name(&file_name) {
+            Some(e) => e,
+            None => return Err(Errno::EINVAL),
+        };
+
+        match self.add_dir_entry(cluster, &new_entry) {
+            Errno::SUCCESS => return Ok(new_entry),
+            e => return Err(e),
+        };
     }
 
     /// Writes all-zeroes to a cluster.
@@ -1032,7 +1341,7 @@ impl Fat32Media {
 
         let zeroes = [0u8; 512];
         for i in 0..self.bpb.sectors_per_cluster {
-            self.write_sector_of_cluster(i, cluster, zeroes);
+            self.write_sector_of_cluster(i, cluster, &zeroes);
         }
     }
     
@@ -1070,45 +1379,56 @@ impl Fat32Media {
         // get parent
         let parent = std::path::Path::new(&path).parent().unwrap();
         let file_name = std::path::Path::new(&path).file_name().unwrap().to_str().unwrap().to_string();
-        assert!(file_name.len() <= 8);
-        let e = self.get_entry(&parent.to_str().unwrap().to_string());
-        if !e.is_some() {
-            return Errno::ENOENT;
-        }
 
-        let cluster = e.unwrap().cluster_number();
-        let mut idx: Option<usize> = None;
-        let mut entry: Option<DirEntry> = None;
-        
-        for (i, x) in self.dir_entry_iter(cluster).enumerate() {
-            if x.is_free() {
+        let cluster = match self.get_entry(&parent.to_str().unwrap().to_string()) {
+            None => return Errno::ENOENT,
+            Some(x) => x.e.cluster_number()
+        };
+
+        let mut idx_entry_pair: Option<(std::ops::Range<usize>, HybridEntry)> = None;
+
+        // TODO Cannot just enumerate() the entries in a directory
+        // anymore to find the index within the directory. A long
+        // entry may span multiple directory entries (N long entries
+        // plus one short entry for N+1 entries in total).
+        //
+        // How to adapt the interface? Have a lookup operation return the index range as well as the entry, e.g.,
+        // (std::ops::Range, HybridEntry)?
+        for (r, x) in self.dir_entry_iter(cluster) {
+          
+            println!("{}, rm(), {:?}", line!(), x);
+
+            if x.e.is_free() {
                 continue;
             }
-            if !(x.is_file() || x.is_directory()) {
+            
+            if !(x.e.is_file() || x.e.is_directory()) {
                 continue;
             }
-            if x.short_name_as_str() == file_name {
-                idx = Some(i);
-                entry = Some(x);
+
+            if x.e.short_name_as_str() == file_name || x.long_name == file_name {
+                idx_entry_pair = Some((r, x));
                 break;
             }
         }
 
-        if entry.is_none() {
-            return Errno::ENOENT;
-        }
-
-        if entry.unwrap().is_directory() {
+        let (range, e) = match idx_entry_pair {
+            None => return Errno::ENOENT,
+            Some(x) => (x.0, x.1)
+        };
+        
+        if e.e.is_directory() {
             return Errno::ENOSYS;
         }
         
-        if entry.unwrap().file_size > 0 {
+        if e.e.file_size > 0 {
             return Errno::ENOSYS;
         }
 
-        let mut new_entry = entry.unwrap();
-        new_entry.mark_free();
-        self.write_dir_entry(cluster, idx.unwrap(), new_entry);
+        for i in range {
+            let empty = DirEntry::default().to_bytes().to_vec();
+            self.write_dir_entry(cluster, i, &empty);
+        }
 
         return Errno::SUCCESS;
     }
@@ -1135,12 +1455,24 @@ impl Fat32Media {
             return Errno::EINVAL;
         }
 
+        match self.get_entry(dst) {
+            None => (),
+            Some(_) => return Errno::EEXIST,
+        };
+
         // let touch_result = self.touch(dst);
         // let (mut dst_entry, dst_entry_idx) = match touch_result {
         //     Ok((e, idx)) => (e, idx),
         //     Err(v) => return v,
         // };
-        let mut dst_entry = DirEntry::new(std::path::Path::new(dst).file_name().unwrap().to_str().unwrap().to_string());
+        let dst_file_name = std::path::Path::new(dst).file_name().unwrap().to_str().unwrap().to_string();
+        if !(is_valid_long_name(&dst_file_name) || is_valid_short_name(&dst_file_name)) {
+            return Errno::EINVAL;
+        }
+        let mut dst_entry = match HybridEntry::from_name(&dst_file_name) {
+            None => panic!(),
+            Some(x) => x
+        };
 
         // if src_meta.len() == 0 {
         //     // TODO preserve metadata such as creation/access/modification time.
@@ -1151,15 +1483,15 @@ impl Fat32Media {
                                            (self.bpb.bytes_per_sec * self.bpb.sectors_per_cluster as u16).into());
         assert!(len_in_clusters > 0);
 
-        let mut clusters =
+        let clusters =
             match self.find_free_fat32_entries(len_in_clusters.try_into().unwrap()) {
                 Some(v) => v,
                 None => return Errno::ENOSPC,
             };
         // println!("fn cp(), {}, src size= {}, clusters= {:?}", line!(), src_meta.len(), clusters);
 
-        dst_entry.set_cluster_number(clusters[0]);
-        dst_entry.file_size = src_meta.len().try_into().unwrap();
+        dst_entry.e.set_cluster_number(clusters[0]);
+        dst_entry.e.file_size = src_meta.len().try_into().unwrap();
 
         // copy content from host to FAT
         let mut left: u64 = src_meta.len();
@@ -1182,7 +1514,7 @@ impl Fat32Media {
                     }
                 }
 
-                self.write_sector_of_cluster(sector, *cluster, buf);
+                self.write_sector_of_cluster(sector, *cluster, &buf);
 
                 if left <= 512 {
                     left = 0;
@@ -1193,7 +1525,7 @@ impl Fat32Media {
         }
 
         // Link clusters into a chain.
-        let mut prev_cluster = dst_entry.cluster_number();
+        let mut prev_cluster = dst_entry.e.cluster_number();
         for cluster in &clusters[1..] {
             self.write_fat_entry(prev_cluster, *cluster);
             prev_cluster = *cluster;
@@ -1201,24 +1533,26 @@ impl Fat32Media {
         self.write_fat_entry(prev_cluster, FAT_END_OF_CHAIN);
 
         let parent_cluster = match self.get_entry(&dst_path.parent().unwrap().to_str().unwrap().to_string()) {
-            Some(e) => e.cluster_number(),
+            Some(e) => e.e.cluster_number(),
             None => panic!(),
         };
-        self.add_dir_entry(parent_cluster, dst_entry);
-
-        return Errno::SUCCESS;
+        
+        match self.add_dir_entry(parent_cluster, &dst_entry) {
+            Errno::SUCCESS => return Errno::SUCCESS,
+            err => return err
+        }
     }
 
     fn cat(&mut self, path: String) -> Errno {
-        let entry: DirEntry = match self.get_entry(&path) {
+        let entry: HybridEntry = match self.get_entry(&path) {
             None => return Errno::EINVAL,
             Some(x) => x,
         };
-        let mut remaining: u32 = entry.file_size;
-        for data in self.file_iter(FatEntry::new(entry.cluster_number()), remaining) {
+        let mut remaining: u32 = entry.e.file_size;
+        for data in self.file_iter(FatEntry::new(entry.e.cluster_number()), remaining) {
             assert!(remaining > 0);
 
-            let size: usize = std::cmp::min(remaining, 512u32).try_into().unwrap();;
+            let size: usize = std::cmp::min(remaining, 512u32).try_into().unwrap();
             io::stdout().write_all(&data[0..size]).expect("");
 
             if remaining >= 512 {
@@ -1230,7 +1564,7 @@ impl Fat32Media {
         return Errno::SUCCESS;
     }
     
-    fn mkdir(&mut self, path: String) -> Result<DirEntry, Errno> {
+    fn mkdir(&mut self, path: String) -> Result<HybridEntry, Errno> {
         // Idea 1:
         // touch(path) - creates entry in parent(path)
         // alloc cluster
@@ -1267,10 +1601,10 @@ impl Fat32Media {
         self.write_fat_entry(dir_cluster, FAT_END_OF_CHAIN);
 
         let mut data = [0u8; 512];
-        let mut dot_entry = DirEntry::new(".".to_string());
+        let mut dot_entry = DirEntry::default();
+        dot_entry.name[0] = b'.';
         dot_entry.set_cluster_number(dir_cluster);
         dot_entry.attr = ATTR_DIRECTORY;
-        let mut dotdot_entry = DirEntry::new("..".to_string());
 
         let parent_entry = match self.get_entry(&parent_path) {
             Some(v) => v,
@@ -1281,24 +1615,28 @@ impl Fat32Media {
             if parent_path.clone() == "/" {
                 0
             } else {
-                parent_entry.cluster_number()
+                parent_entry.e.cluster_number()
             }
         };
+        let mut dotdot_entry = DirEntry::default();
+        dotdot_entry.name[0] = b'.';
+        dotdot_entry.name[1] = b'.';
         dotdot_entry.set_cluster_number(dotdot_cluster);
         dotdot_entry.attr = ATTR_DIRECTORY;
 
         data[0..32].copy_from_slice(&dot_entry.to_bytes());
         data[32..64].copy_from_slice(&dotdot_entry.to_bytes());
 
-        self.write_sector_of_cluster(0, dir_cluster, data);
+        self.write_sector_of_cluster(0, dir_cluster, &data);
 
-        let mut entry = DirEntry::new(file_name);
-        entry.set_cluster_number(dir_cluster);
-        entry.attr = ATTR_DIRECTORY;
+        let mut entry = HybridEntry::new(&file_name);
+        entry.e.set_cluster_number(dir_cluster);
+        entry.e.attr = ATTR_DIRECTORY;
 
-        match self.add_dir_entry(parent_entry.cluster_number(), entry) {
+        match self.add_dir_entry(parent_entry.e.cluster_number(), &entry) {
+
             Errno::SUCCESS => return Ok(entry),
-            x => {
+            _ => {
                 self.write_fat_entry(dir_cluster, FAT_CLUSTER_FREE);
                 return Err(Errno::ENOSPC);
             },
@@ -1405,24 +1743,88 @@ impl Fat32Media {
                       idx: 0 }
     }
 
-    fn add_dir_entry(&mut self, cluster: u32, new_entry: DirEntry) -> Errno {
+    /// Creates a new entry in a directory.
+    ///
+    /// First, find the index within the cluster chain pointed to by
+    /// `cluster` at which to write the new entry. If there is
+    /// insufficient space, allocate and append a new cluster to this
+    /// directory's cluster chain.
+    ///
+    /// @param cluster Usually the first cluster of a directory.
+    ///
+    /// Since this function iterates over all directory entries, it is
+    /// a good spot to determine a unique short name given a long
+    /// name.
+    ///
+    /// `new_entry` either has new_entry.long_name set or
+    /// new_entry.e.name. However, this would require `new_entry` to
+    /// be mutable though.
+    ///
+    /// This function does not check if the long_name is unique
+    /// though. This is the caller's responsibility.
+    fn add_dir_entry(&mut self, cluster: u32, entry: &HybridEntry) -> Errno {
+
+        // Caller must only provide a short or long name (but not
+        // both).
+        if entry.long_name.len() > 0 && !entry.e.is_free() {
+            return Errno::EINVAL;
+        }
+        
+        // println!("{} fn add_dir_entry()", line!());
+
+        let mut new_entry = entry.clone();
+        // Instead of faithfully generating a short name based on the
+        // long name and the other short names in this directory,
+        // generate a random name.
+        //
+        // This can be done without needing to know all the other
+        // existing short names in the directory. It should only be a
+        // problem if you want to find a long file on a FAT
+        // implementation only supporting short names. If the FAT
+        // implementation supports long names, it should always show
+        // you the long name anyway (and you do not care what the
+        // short name is)..
+        if entry.long_name.len() > 0 {
+            let mut rng = rand::thread_rng();
+            let s: String = rng.sample_iter(&Alphanumeric).take(11).collect::<String>().to_ascii_uppercase();
+            new_entry.e.name.copy_from_slice(s.as_bytes());
+        }
+
+        let bytes = new_entry.to_bytes();
+        assert!(bytes.len() % DIR_ENTRY_SIZE == 0);
+        
+        if bytes.len() > 512 {
+            // TODO Currently, the implementation only allocates a
+            // single new cluster if there is insufficient space. The
+            // new cluster offers a minimum of 512 bytes. Be
+            // conservative and fail if more space is required.
+            return Errno::EINVAL;
+        }
+        
+        let num_entries = bytes.len() / DIR_ENTRY_SIZE;
         let mut free_idx: Option<usize> = None;
         let mut max_idx: usize = 0;
-        for (idx, e) in self.dir_entry_iter(cluster).enumerate() {
-            if e.is_free() {
-                if free_idx == None {
-                    free_idx = Some(idx);
+        let mut consecutive_free_entries = 0usize;
+        for (range, e) in self.dir_entry_iter(cluster) {
+            if e.e.is_free() {
+                consecutive_free_entries += 1;
+                if consecutive_free_entries == num_entries && free_idx == None {
+                    free_idx = Some(range.start - consecutive_free_entries + 1);
                 }                    
             } else {
-                if (e.is_file() || e.is_directory()) &&
-                    e.short_name_as_str() == new_entry.short_name_as_str() {
+                consecutive_free_entries = 0;
+                if (e.e.is_file() || e.e.is_directory()) &&
+                    e.e.short_name_as_str() == new_entry.e.short_name_as_str() ||
+                    (e.long_name.len() > 0 && e.long_name == new_entry.long_name) {
                     return Errno::EEXIST;
                 }
             }
 
-            max_idx += 1;
+            max_idx = range.end;
         }
 
+        // Allocate a new cluster if not enough consecutive free
+        // entries were found so far.
         if free_idx == None {
             let free_fat_entries = match self.find_free_fat32_entries(1) {
                 None => return Errno::ENOSPC,
@@ -1434,33 +1836,51 @@ impl Fat32Media {
                 self.clear_cluster(*x);
             }
 
-            free_idx = Some(max_idx);
+            // max_idx references the first entry in the newly
+            // allocated cluster. Use any remaining free entries in
+            // the already existing cluster By subtracting
+            // `consecutive_free_entries` from `max_idx`. As a result,
+            // the new entry will span a cluster boundary.
+            free_idx = Some(max_idx - consecutive_free_entries);
         }
 
-        self.write_dir_entry(cluster, free_idx.unwrap(), new_entry);
+        self.write_dir_entry(cluster, free_idx.unwrap(), &new_entry.to_bytes());
         return Errno::SUCCESS;
     }
     
-    /// @param cluster Points to first(!) cluster of a directory.
-    pub fn write_dir_entry(&mut self, cluster: u32, idx: usize, e: DirEntry) {
-        // println!("fn write_dir_entry() {} cluster= {}, idx= {}, e= {:?}",
-        //          line!(), cluster, idx, e);
+    /// @param cluster First(!) cluster of a directory.
+    pub fn write_dir_entry(&mut self, cluster: u32, idx: usize, bytes: &Vec<u8>) {
+        println!("fn write_dir_entry() {} cluster= {}, idx= {}",
+                 line!(), cluster, idx);
 
         let mut data = [0u8; 512];
         let entries_per_sector = data.len() / core::mem::size_of::<DirEntry>();
         let idx_within_sector: usize = idx % entries_per_sector;
         let mut sector: u8 = (idx / entries_per_sector).try_into().unwrap();
+        let entries_to_write = bytes.len() / DIR_ENTRY_SIZE;
 
+        // If the entry spans a sector/cluster boundary, two sectors
+        // must be updated.
+        let entries_first_sector = std::cmp::min(entries_to_write, entries_per_sector - idx_within_sector);
+        let entries_second_sector = entries_to_write - entries_first_sector;
+        
         self.read_sector_of_chain(sector, cluster, &mut data);
-        data[idx_within_sector * core::mem::size_of::<DirEntry>()..(idx_within_sector + 1) * core::mem::size_of::<DirEntry>()].copy_from_slice(&e.to_bytes());
+        // let num_entries = bytes.len() / DIR_ENTRY_SIZE;
+        // println!("{} num_entries= {}", line!(), num_entries);
+        // println!("{} bytes= {:#04X?}", line!(), bytes);
+        data[idx_within_sector * DIR_ENTRY_SIZE..(idx_within_sector + entries_first_sector) * DIR_ENTRY_SIZE].copy_from_slice(
+            &bytes[0..entries_first_sector*DIR_ENTRY_SIZE]);
 
-        let mut fat_entry = FatEntry::new(cluster);
-        while sector >= self.bpb.sectors_per_cluster {
-            fat_entry = self.cluster_number_to_fat32_entry(fat_entry.read());
-            sector -= self.bpb.sectors_per_cluster;
+        self.write_sector_of_chain(sector, cluster, &data);
+
+        if entries_second_sector == 0 {
+            return;
         }
 
-        self.write_sector_of_cluster(sector, fat_entry.read(), data);
+        self.read_sector_of_chain(sector+1, cluster, &mut data);
+        data[0..entries_second_sector * DIR_ENTRY_SIZE].copy_from_slice(
+            &bytes[entries_first_sector * DIR_ENTRY_SIZE..]);
+        self.write_sector_of_chain(sector+1, cluster, &mut data);
     }
 }
 
@@ -1551,43 +1971,38 @@ impl<'a> Fat32Media {
         let mut long_name_buf: [u16;LONG_NAME_MAX_CHARS] = [0;LONG_NAME_MAX_CHARS];
         let mut long_name = "".to_string();
         let mut checksum = 0u8;
-        let mut visit_dir: Vec<DirEntry> = vec![];
-        let mut visit_files: Vec<DirEntry> = vec![];
+        let mut visit_dir: Vec<HybridEntry> = vec![];
+        let mut visit_files: Vec<HybridEntry> = vec![];
 
+        // TODO Use DirEntryItr to loop over directory entries.
         let itr = self.cluster_iter(FatEntry::new(cluster_id));
         'outer: for sector_data in itr {
             let entries_per_sector = sector_data.len() / core::mem::size_of::<DirEntry>();
             for i in 0..entries_per_sector {
-                let dir_entry: DirEntry = unsafe {
-                    mem::transmute_copy(&sector_data[core::mem::size_of::<DirEntry>()*i])
-                };
-                let long_entry: LongEntry = unsafe {
-                    mem::transmute_copy(&sector_data[core::mem::size_of::<LongEntry>()*i])
-                };
+                let mut dir_entry = HybridEntry::from_short(&DirEntry::from_bytes_short(&sector_data[DIR_ENTRY_SIZE*i..DIR_ENTRY_SIZE*(i+1)]).unwrap());
+                let long_entry = LongEntry::from_bytes(&sector_data[DIR_ENTRY_SIZE*i..DIR_ENTRY_SIZE*(i+1)]).unwrap();
 
                 // println!("{} {:?}", line!(), dir_entry);
                 
                 // Special case where all subsequent entries are free and need
                 // not be examined.
-                if dir_entry.name[0] == 0x0 {
+                if dir_entry.e.is_free_and_following() {
                     // If long_name is set, this entry was preceeded
                     // by one or more long entries. Long entries mut
                     // be followed by a matching short entry, but we
                     // found an empty entry. Something is up.
                     assert!(long_name.is_empty());
+                    println!("{} dir_entry.name[0] == 0x00", line!());
                     break 'outer;
                 }
 
-                if !dir_entry.is_free() {
+                if !dir_entry.e.is_free() {
                     // dir_entry.print();
 
-                    if dir_entry.is_long_name() {
+                    if dir_entry.e.is_long_name() {
                         // Long entry must be followed by short
                         // entry. This is another long entry.
                         assert!(long_name.is_empty());
-                        
-                        println!("long entry checksum {}", long_entry.checksum);
-                        println!("BLU {:x?}", long_entry.to_bytes());
                         
                         // assemble long name
                         if (long_entry.ord & LAST_LONG_ENTRY) != 0 {
@@ -1625,13 +2040,16 @@ impl<'a> Fat32Media {
                         }
                     }
 
-                    if dir_entry.is_file() {
+                    if dir_entry.e.is_file() {
                         if !long_name.is_empty() {
-                            println!("{} long_name= {}, dir_entry.name= {} {:X?}", line!(), long_name, String::from_utf8(dir_entry.name.to_vec()).unwrap(), dir_entry.name);
-                            assert_eq!(dir_entry.checksum(), checksum);
+                            println!("{} long_name={}, dir_entry.name={} {:X?}, gen_short_name={:X?}",
+                                     line!(), long_name, String::from_utf8(dir_entry.e.name.to_vec()).unwrap(),
+                                     dir_entry.e.name, gen_short_name(&long_name, &vec![]));
+                            assert_eq!(dir_entry.e.checksum(), checksum);
                             // assert_eq!(gen_short_name(&long_name, &vec![]).unwrap(),
                             //            dir_entry.name);
                         }
+                        dir_entry.long_name = long_name.clone();
                         
                         // println!("short entry checksum {}", dir_entry.checksum());
                         match handler.handle_file(&dir_entry) {
@@ -1643,15 +2061,19 @@ impl<'a> Fat32Media {
                         // corresponding short entry.
                         long_name.clear();
 
-                    } else if dir_entry.is_directory() {
+                    } else if dir_entry.e.is_directory() {
                         // Skip . and ..
 
-                        if dir_entry.is_dot_entry() || dir_entry.is_dot_dot_entry() {
+                        if dir_entry.e.is_dot_entry() || dir_entry.e.is_dot_dot_entry() {
                             continue;
                         }
 
                         if !long_name.is_empty() {
-                            assert_eq!(dir_entry.checksum(), checksum);
+                            assert_eq!(dir_entry.e.checksum(), checksum);
+                            println!("{} long_name={}, dir_entry.name={} {:X?}, gen_short_name={:X?}",
+                                     line!(), long_name, String::from_utf8(dir_entry.e.name.to_vec()).unwrap(),
+                                     dir_entry.e.name, gen_short_name(&long_name, &vec![]));
+
                         }
 
                         match handler.handle_dir(&dir_entry) {
@@ -1669,16 +2091,16 @@ impl<'a> Fat32Media {
         }
 
         for dir in visit_dir {
-            handler.enter(dir);
-            self.parse_directory(dir.cluster_number(), handler);
+            handler.enter(&dir);
+            self.parse_directory(dir.e.cluster_number(), handler);
             handler.exit();
         }
 
         for f in visit_files {
-            handler.enter(f);
+            handler.enter(&f);
             // println!("visit_file {:?}", f);
-            let mut remaining: usize = f.file_size.try_into().unwrap();
-            for sector_data in self.file_iter(FatEntry::new(f.cluster_number()), f.file_size) {
+            let mut remaining: usize = f.e.file_size.try_into().unwrap();
+            for sector_data in self.file_iter(FatEntry::new(f.e.cluster_number()), f.e.file_size) {
                 assert!(remaining > 0);
                 handler.consume(&sector_data, std::cmp::min(remaining, 512));
                 if remaining >= 512 {
@@ -1694,17 +2116,17 @@ impl<'a> Fat32Media {
     /// Construct a DirEntry with the root directory cluster id.  The
     /// root directory's cluster id is *not* stored in the File
     /// Allocate Table.
-    fn root(&self) -> DirEntry {
-        let mut e = DirEntry::new("".to_string());
+    fn root(&self) -> HybridEntry {
+        let mut e = DirEntry::default();
         e.first_cluster_low = self.fat32.root_cluster.try_into().unwrap();
-        e
+        HybridEntry { e: e, long_name: String::new() }
     }
 
     /// Returns DirEntry for a given file or directory or None if no
     /// such entry exists.
-    fn get_entry(&'a mut self, path: &str) -> Option<DirEntry> {
+    fn get_entry(&'a mut self, path: &str) -> Option<HybridEntry> {
         let p = std::path::Path::new(path);
-        let mut entry: Option<DirEntry> = Some(self.root());
+        let mut entry: Option<HybridEntry> = Some(self.root());
 
         for component in p.components() {
             if component == std::path::Component::RootDir {
@@ -1713,7 +2135,8 @@ impl<'a> Fat32Media {
 
             // println!("fn get_entry(), line= {}, {} {:?}",
             //          line!(), entry.unwrap().cluster_number(), component.as_os_str().to_str());
-            entry = self.get_entry_in_dir(entry.unwrap().cluster_number(), component.as_os_str().to_str().unwrap().to_string());
+            entry = self.get_entry_in_dir(entry.unwrap().e.cluster_number(),
+                                          component.as_os_str().to_str().unwrap().to_string());
             // println!("fn get_entry(), line= {}, {:?}", line!(), entry);
 
             if !entry.is_some() {
@@ -1724,17 +2147,18 @@ impl<'a> Fat32Media {
     }
 
     /// Returns DirEntry for a file or directory within a specific directory (cluster_id).
-    fn get_entry_in_dir(&'a mut self, cluster_id: u32, short_name: String) -> Option<DirEntry> {
-        assert!(short_name.len() <= 12);
-        assert!(short_name.contains("/") == false);
+    fn get_entry_in_dir(&'a mut self, cluster_id: u32, name: String) -> Option<HybridEntry> {
+        assert!(name.contains("/") == false);
 
-        let mut action = FindCommand { path: short_name, prefix: "".to_string(), entry: None };
+        let mut action = FindCommand {
+            path: name, prefix: "".to_string(), entry: None
+        };
         self.parse_directory(cluster_id, &mut action);
         return action.entry;
     }
 
     /// Updates a specific sector of a cluster.
-    fn write_sector_of_cluster(&mut self, sector: u8, cluster: u32, data: [u8; 512]) {
+    fn write_sector_of_cluster(&mut self, sector: u8, cluster: u32, data: &[u8; 512]) {
         assert!(sector < self.bpb.sectors_per_cluster);
         assert!(cluster < count_of_clusters(&self.bpb, &self.fat32));
 
@@ -1745,10 +2169,23 @@ impl<'a> Fat32Media {
                            sector as u32 + self.mbr.partitions[0].offset_lba) * 512;
         assert!(self.f.seek(SeekFrom::Start(file_offset.into())).is_ok());
 
-        let mut r = self.f.write_all(&data);
+        let r = self.f.write_all(data);
         assert!(r.is_ok());
         // r = self.f.sync_all();
         // assert!(r.is_ok());
+    }
+
+    /// @param sector Sector number within the chain pointed to by `cluster`.
+    /// @param cluster First cluster of a directory.
+    fn write_sector_of_chain(&mut self, mut sector: u8, cluster: u32, data: &[u8; 512]) {
+        let mut fat_entry = FatEntry::new(cluster);
+        while sector >= self.bpb.sectors_per_cluster {
+            fat_entry = self.cluster_number_to_fat32_entry(fat_entry.read());
+            sector -= self.bpb.sectors_per_cluster;
+        }
+
+        self.write_sector_of_cluster(sector, fat_entry.read(), data);
+
     }
 
     fn read_sector_of_cluster(&mut self, sector: u8, cluster: u32, data: &mut [u8; 512]) {
@@ -1777,7 +2214,7 @@ impl<'a> Fat32Media {
 }
 
 fn repl(fat: &mut Fat32Media) {
-    while true {
+    loop {
         print!("> ");
         std::io::stdout().flush().expect("");
         let mut buf = String::new();
@@ -1785,7 +2222,7 @@ fn repl(fat: &mut Fat32Media) {
             Ok(x) => if x == 0 {
                 return;
             },
-            Err(x) => panic!(),
+            Err(x) => panic!(x),
         }
 
         let tokens: Vec<&str> = buf.split_ascii_whitespace().collect();
@@ -1806,7 +2243,7 @@ fn repl(fat: &mut Fat32Media) {
                 let root_cluster = fat.fat32.root_cluster;
                 fat.parse_directory(root_cluster, &mut action);
                 for e in &action.entries {
-                    e.print();
+                    print!("{}", e.print());
                 }
             },
             "touch" => {
@@ -1836,8 +2273,8 @@ fn repl(fat: &mut Fat32Media) {
             },
             "mkdir" => {
                 match fat.mkdir(tokens[1].to_string()) {
-                    _ => continue,
                     Err(e) => println!("error {:?}", e),
+                    _ => continue,
                 }
             },
             _ => println!("unknown command"),
@@ -1899,7 +2336,7 @@ fn main() {
             };
             fat.parse_directory(root_cluster, &mut action);
             for e in &action.entries {
-                e.print();
+                print!("{}", e.print());
             }
         },
         SubCommand::ListFsCommand(_t) => {
@@ -1930,16 +2367,16 @@ mod test {
         let mut action: LsCommand = LsCommand::new("/".to_string());
         fat.parse_directory(fat.fat32.root_cluster, &mut action);
 
-        let mut x = action.entries.iter().map(|x| x.short_name_as_str()).collect::<Vec<String>>();
+        let mut x = action.entries.iter().map(|x| x.e.short_name_as_str()).collect::<Vec<String>>();
         x.sort();
         assert_eq!(x, (0..10).map(|x| x.to_string()).collect::<Vec<String>>());
         for e in &action.entries {
-            assert!(e.is_directory());
+            assert!(e.e.is_directory());
         }
 
         action = LsCommand::new("/1/".to_string());
         fat.parse_directory(fat.fat32.root_cluster, &mut action);
-        let x = action.entries.iter().map(|x| x.short_name_as_str()).collect::<Vec<String>>();
+        let x = action.entries.iter().map(|x| x.e.short_name_as_str()).collect::<Vec<String>>();
         let expected_entries = ["66EC94BA", "83186062", "590D2E74", "EE45872D", "897965E7", "E4CB5817"].iter().map(|x| x.to_string()).collect::<Vec<String>>();
         for expected in &expected_entries {
             assert!(x.contains(expected));
@@ -1951,7 +2388,7 @@ mod test {
 
         action = LsCommand::new("/4/E9068190".to_string());
         fat.parse_directory(fat.fat32.root_cluster, &mut action);
-        let x = action.entries.iter().map(|x| x.short_name_as_str()).collect::<Vec<String>>();
+        let x = action.entries.iter().map(|x| x.e.short_name_as_str()).collect::<Vec<String>>();
         assert!(x.contains(&"E9068190".to_string()));
     }
 
@@ -2001,15 +2438,53 @@ mod test {
     
     #[test]
     fn test_long_entry() {
-        let e = HybridEntry { e: DirEntry::new("".to_string()), long_name: "The quick brown.fox".to_string() };
-        println!("BLAH {:x?}", e.to_bytes());
-    }
+        let mut e = match HybridEntry::from_name("The quick brown.fox") {
+            None => panic!(),
+            Some(x) => x,
+        };
+
+        e.e.name.copy_from_slice(&"THEQUI~1FOX".to_string().as_bytes()[..]);
+        // println!("{:#04X?}", e.to_bytes());
+        // This byte array encodes two long entries and the corresponding short entry.
+        let bytes = [
+            0x42, 0x77, 0x00, 0x6E, 0x00, 0x2E, 0x00, 0x66, 0x00, 0x6F, 0x00, 0x0F, 0x00, 0x07, 0x78, 0x00,
+            0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF,
+            0x01, 0x54, 0x00, 0x68, 0x00, 0x65, 0x00, 0x20, 0x00, 0x71, 0x00, 0x0F, 0x00, 0x07, 0x75, 0x00,
+            0x69, 0x00, 0x63, 0x00, 0x6B, 0x00, 0x20, 0x00, 0x62, 0x00, 0x00, 0x00, 0x72, 0x00, 0x6F, 0x00,
+            0x54, 0x48, 0x45, 0x51, 0x55, 0x49, 0x7E, 0x31, 0x46, 0x4F, 0x58, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x21, 0x00, 0x21, 0x00, 0x00, 0x00, 0x01, 0x00, 0x21, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+        ];
+        assert_eq!(e.to_bytes(), bytes.to_vec());
+  }
 
     use gen_short_name;
     #[test]
     fn test_gen_short_name() {
-        assert_eq!("MUSTCAP\0\0\0\0".to_string().as_bytes(), gen_short_name("MustCap", &vec![]).unwrap());
+        assert_eq!("MUSTCAP    ".to_string().as_bytes(), gen_short_name("MustCap", &vec![]).unwrap());
         assert_eq!(gen_short_name("Illegal$", &vec![]), None);
-        assert_eq!("LEGAL31\0\0\0\0".to_string().as_bytes(), gen_short_name("Legal31", &vec![]).unwrap());
+        assert_eq!("LEGAL31    ".to_string().as_bytes(), gen_short_name("Legal31", &vec![]).unwrap());
+        assert_eq!("THEQUI~1FOX".to_string().as_bytes(),
+                   gen_short_name("The quick brown.fox", &vec![]).unwrap());
+        assert_eq!("LETTER01DOC".to_string().as_bytes(),
+                   gen_short_name("Letter01.doc", &vec![]).unwrap());
+    }
+
+    #[test]
+    fn test_from_to_bytes() {
+        let mut fat = Fat32Media::new("testcase_01.img".to_string());
+        let entry = fat.get_entry("/1/66EC94BA").unwrap();
+        let bytes = entry.e.to_bytes();
+        assert_eq!(DirEntry::from_bytes_short(&bytes).unwrap(), entry.e);
+    }
+
+    #[test]
+    fn test_mkdir() {
+        let mut fat = Fat32Media::new("testcase_01.img".to_string());
+    }
+
+    use is_valid_short_name;
+    #[test]
+    fn test_is_valid_short_name() {
+        assert!(is_valid_short_name("1"));
     }
 }
