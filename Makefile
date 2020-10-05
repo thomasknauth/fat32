@@ -17,6 +17,8 @@ mount:
 unmount:
 	hdiutil unmount /Volumes/NAME
 
+PREFIX=/Volumes/RAMDisk
+
 # This is just to document some Makefile weirdness I came across.
 # 
 # The following rule probably does not do what you expect it to
@@ -33,8 +35,15 @@ blah:
 	echo $(shell date)
 	echo $(shell cat /tmp/a)
 
+DISK_512_SECTORS=2097152 # 1GB
+
+/Volumes/RAMDisk:
+	DEV=$(shell hdiutil attach -nomount ram://$(DISK_512_SECTORS)) && \
+	diskutil erasevolume HFS+ RAMDisk $$DEV && \
+	hdiutil mount $$DEV
+
 # Create a disk image for testing. Assumes OSX as the platform.
-test.img:
+$(PREFIX)/test.img: $(PREFIX)
 	dd if=/dev/zero of=$@ bs=1m count=128 conv=sparse
 	DEV=`hdiutil attach -imagekey diskimage-class=CRawDiskImage -nomount $@` && \
 	diskutil eraseDisk FAT32 NAME MBRFormat $$DEV && \
@@ -42,18 +51,31 @@ test.img:
 	python3 ./fsck.py /Volumes/NAME
 	hdiutil detach /Volumes/NAME
 
-empty.img:
+$(PREFIX)/empty.img: $(PREFIX)
 	dd if=/dev/zero of=$@ bs=1m count=128
 	DEV=`hdiutil attach -imagekey diskimage-class=CRawDiskImage -nomount $@` && \
 	diskutil eraseDisk FAT32 NAME MBRFormat $$DEV && \
 	hdiutil eject $$DEV
 
+$(PREFIX)/testcase_01.img: testcase_01.img
+	cp $< $@
+
+$(PREFIX)/testcase_02.img: $(PREFIX)/empty.img
+	cp $< $@
+
+$(PREFIX)/testcase_03.img: $(PREFIX)/empty.img
+	cp $< $@
+
+.PHONY: testfiles
+testfiles: $(PREFIX)/test.img $(PREFIX)/empty.img  $(PREFIX)/testcase_01.img $(PREFIX)/testcase_02.img $(PREFIX)/testcase_01.img
+	cp testcase_01.img $(PREFIX)/
+	cp $(PREFIX)/empty.img $(PREFIX)/testcase_02.img
+	cp $(PREFIX)/empty.img $(PREFIX)/testcase_03.img
+
 # Execute the Rust binary to test the implementation.
 .PHONY: check
-check: target/debug/fat32 test.img empty.img
+check: target/debug/fat32 testfiles
 	target/debug/fat32 selftest
-	cp empty.img testcase_02.img
-	cp empty.img testcase_03.img
 	cargo test -- --nocapture
 
 .PHONY: clean

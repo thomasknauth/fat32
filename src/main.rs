@@ -409,6 +409,19 @@ impl DirEntry {
                   file_size: 0 }
     }
 
+    fn dot_entry() -> DirEntry {
+        let mut e = DirEntry::default();
+        e.name = [b' '; 11];
+        e.name[0] = b'.';
+        return e;
+    }
+
+    fn dotdot_entry() -> DirEntry {
+        let mut e = DirEntry::dot_entry();
+        e.name[1] = b'.';
+        return e;
+    }
+
     // @param name File name in human readable format, e.g., "LETTER01.DOC".
     fn new(name: String) -> DirEntry {
         assert!(is_valid_short_name(&name));
@@ -646,12 +659,12 @@ impl HybridEntry {
             e: DirEntry::default(),
             long_name: String::new()
         };
-        
+
         if is_valid_short_name(name) {
             e.e.name.copy_from_slice(&short_name_to_bytes(name));
         } else {
             assert!(is_valid_long_name(name));
-            e.e.name.copy_from_slice(&gen_short_name(name, &vec![]).unwrap());
+            // e.e.name.copy_from_slice(&gen_short_name(name, &vec![]).unwrap());
             e.long_name = name.to_string();
         }
         return e;
@@ -683,6 +696,9 @@ impl HybridEntry {
 /// TODO Relax the currently too restrictive implementation.
 fn is_valid_long_name(name: &str) -> bool {
 
+    let special_short_chars = "$%'-_@~`!(){}^#& ";
+    let special_long_chars  = "+,;=[].";
+
     if !name.is_ascii() {
         return false;
     }
@@ -693,7 +709,8 @@ fn is_valid_long_name(name: &str) -> bool {
         return false;
     }
 
-    if !name.chars().all(|b| b.is_ascii() && (b.is_alphanumeric() || b == '.' || b == ' ')) {
+    if !name.chars().all(|b| b.is_alphanumeric() || special_short_chars.contains(b) ||
+                         special_long_chars.contains(b)) {
         return false;
     }
 
@@ -735,7 +752,7 @@ fn gen_short_name(long_name: &str, existing: &Vec<String>) -> Option<[u8;11]> {
     if !is_valid_long_name(long_name) {
         return None;
     }
-    
+
     let upper_cased_name = long_name.to_uppercase();
 
     // TODO replace illegal glyphs with _ (underscore).
@@ -811,7 +828,7 @@ use rand::distributions::Alphanumeric;
 #[derive(Clap)]
 #[clap(version = "0.1", author = "Thomas K.")]
 struct Opts {
-    #[clap(short,long, default_value = "test.img")]
+    #[clap(short,long, default_value = "/Volumes/RAMDisk/test.img")]
     diskimage: String,
     #[clap(subcommand)]
     subcmd: SubCommand
@@ -1152,6 +1169,8 @@ struct FileItr<'a> {
 struct DirEntryItr<'a> {
     cluster_itr: ClusterItr<'a>,
     data: [u8; 512],
+    // Counts directory entries for the directory (across sector and
+    // cluster boundaries).
     idx: usize,
 }
 
@@ -1167,19 +1186,23 @@ impl Iterator for DirEntryItr<'_> {
         let mut checksum  = 0u8;
 
         loop {
-            if self.idx >= self.data.len() / DIR_ENTRY_SIZE {
+            let entries_per_sector = self.data.len() / DIR_ENTRY_SIZE;
+            if self.idx % entries_per_sector == 0 {
                 match self.cluster_itr.next() {
                     Some(x) => self.data = x,
                     None => return None
                 }
                 println!("{}, DirEntryItr::next(), next cluster", line!());
-                self.idx = 0;
+                // self.idx = 0;
             }
 
             let idx = self.idx;
-            let slice = &self.data[DIR_ENTRY_SIZE*idx..DIR_ENTRY_SIZE*(idx+1)];
+
+            let sector_idx_low  = (idx % entries_per_sector) * DIR_ENTRY_SIZE;
+            let sector_idx_high = sector_idx_low + DIR_ENTRY_SIZE;
+            let slice = &self.data[sector_idx_low..sector_idx_high];
             self.idx += 1;
-            
+
             let short = DirEntry::from_bytes_short(slice).unwrap();
             println!("{}, DirEntryItr::next(), short={:X?}", line!(), short);
             if short.is_free() {
@@ -1194,8 +1217,9 @@ impl Iterator for DirEntryItr<'_> {
                                  HybridEntry::from_short(&short)));
                 }
                 assert!(short.checksum() == checksum);
-                    return Some((idx-round_up_div(long_name.len() as u64, 13) as usize..idx+1,
-                                 HybridEntry {e: short, long_name: long_name}));
+                let idx_low = idx - round_up_div(long_name.len() as u64, 13) as usize;
+                let idx_high = idx + 1;
+                return Some((idx_low..idx_high, HybridEntry {e: short, long_name: long_name}));
             }
 
             let long = LongEntry::from_bytes(slice).unwrap();
@@ -1216,7 +1240,7 @@ impl Iterator for DirEntryItr<'_> {
                 // entry's ord.
                 assert!(long.ord == prev_ord - 1);
             }
-            
+
             long_name.insert_str(0, &long.to_string());
 
             assert!(long.checksum == checksum);
@@ -1274,11 +1298,11 @@ fn round_up_div(dividend: u64, divisor: u64) -> u64 {
 
 fn is_valid_short_name(name: &str) -> bool {
     let tokens = name.split(".").collect::<Vec<&str>>();
-    
+
     if tokens.len() > 2 {
         return false;
     }
-    
+
     if tokens[0].len() > 8 {
         return false;
     }
@@ -1286,18 +1310,19 @@ fn is_valid_short_name(name: &str) -> bool {
     if tokens[0].len() == 0 {
         return false;
     }
-    
+
     if tokens.len() == 2 {
         if tokens[1].len() > 3 {
             return false;
         }
     }
 
+    let special_short_chars = "$%'-_@~`!(){}^#& ";
     if !name.chars().all(|c| (c.is_ascii_alphabetic() && c.is_ascii_uppercase()) ||
-                         c.is_ascii_digit() || c == '.' || c == '~') {
+                         c.is_ascii_digit() || special_short_chars.contains(c)) {
         return false;
     }
-    
+
     return true;
 }
 
@@ -1592,7 +1617,7 @@ impl Fat32Media {
             };
             (parent_path, file_name)
         };
-        
+
         let dir_cluster = match self.find_free_fat32_entries(1) {
             Some(v) => v[0],
             None => return Err(Errno::ENOSPC),
@@ -1601,8 +1626,7 @@ impl Fat32Media {
         self.write_fat_entry(dir_cluster, FAT_END_OF_CHAIN);
 
         let mut data = [0u8; 512];
-        let mut dot_entry = DirEntry::default();
-        dot_entry.name[0] = b'.';
+        let mut dot_entry = DirEntry::dot_entry();
         dot_entry.set_cluster_number(dir_cluster);
         dot_entry.attr = ATTR_DIRECTORY;
 
@@ -1618,9 +1642,9 @@ impl Fat32Media {
                 parent_entry.e.cluster_number()
             }
         };
-        let mut dotdot_entry = DirEntry::default();
-        dotdot_entry.name[0] = b'.';
-        dotdot_entry.name[1] = b'.';
+        let mut dotdot_entry = DirEntry::dotdot_entry();
+        // dotdot_entry.name[0] = b'.';
+        // dotdot_entry.name[1] = b'.';
         dotdot_entry.set_cluster_number(dotdot_cluster);
         dotdot_entry.attr = ATTR_DIRECTORY;
 
@@ -1737,9 +1761,9 @@ impl Fat32Media {
     /// directory with Fat32Media::write_dir_entry(cluster, idx, DirEntry).
     pub fn dir_entry_iter(&mut self, cluster: u32) -> DirEntryItr {
         let mut cluster_itr = self.cluster_iter(FatEntry::new(cluster));
-        let data = cluster_itr.next().unwrap();
+        // let data = cluster_itr.next().unwrap();
         DirEntryItr { cluster_itr: cluster_itr,
-                      data: data,
+                      data: [0u8; 512],
                       idx: 0 }
     }
 
@@ -2363,7 +2387,7 @@ mod test {
 
     #[test]
     fn test_ls_01() {
-        let mut fat = Fat32Media::new("testcase_01.img".to_string());
+        let mut fat = Fat32Media::new("/Volumes/RAMDisk/testcase_01.img".to_string());
         let mut action: LsCommand = LsCommand::new("/".to_string());
         fat.parse_directory(fat.fat32.root_cluster, &mut action);
 
@@ -2394,7 +2418,7 @@ mod test {
 
     #[test]
     fn test_find_free_fat32_entry() {
-        let mut fat = Fat32Media::new("testcase_01.img".to_string());
+        let mut fat = Fat32Media::new("/Volumes/RAMDisk/testcase_01.img".to_string());
         println!("{:?} ", fat.find_free_fat32_entries(10));
         println!("FAT[0]= {:X?} ", fat.cluster_number_to_fat32_entry(0));
         println!("FAT[1]= {:X?} ", fat.cluster_number_to_fat32_entry(1));
@@ -2409,7 +2433,7 @@ mod test {
 
     #[test]
     fn test_touch() {
-        let mut fat = Fat32Media::new("testcase_02.img".to_string());
+        let mut fat = Fat32Media::new("/Volumes/RAMDisk/testcase_02.img".to_string());
         assert_eq!(fat.touch(&"/0/1".to_string()).unwrap_err(), Errno::ENOENT);
         // On OSX, the newly formatted volume can hold 13 additional
         // entries in its root directory before we need to allocate a
@@ -2428,7 +2452,7 @@ mod test {
     /// Test writing files into FAT by copying files from the host to the image.
     fn test_cp() {
         // TODO Create new empty image before each run (instead of relying on existing files).
-        let mut fat = Fat32Media::new("testcase_03.img".to_string());
+        let mut fat = Fat32Media::new("/Volumes/RAMDisk/testcase_03.img".to_string());
         for i in 0..16 {
             fat.cp("host:///Users/thomas/rust/fat32/src/main.rs", &format!("/{}", i));
         }
@@ -2461,7 +2485,8 @@ mod test {
     #[test]
     fn test_gen_short_name() {
         assert_eq!("MUSTCAP    ".to_string().as_bytes(), gen_short_name("MustCap", &vec![]).unwrap());
-        assert_eq!(gen_short_name("Illegal$", &vec![]), None);
+        assert_eq!(gen_short_name("extChaR=", &vec![]).unwrap(),
+                   "EXTCHAR=   ".to_string().as_bytes());
         assert_eq!("LEGAL31    ".to_string().as_bytes(), gen_short_name("Legal31", &vec![]).unwrap());
         assert_eq!("THEQUI~1FOX".to_string().as_bytes(),
                    gen_short_name("The quick brown.fox", &vec![]).unwrap());
@@ -2471,7 +2496,7 @@ mod test {
 
     #[test]
     fn test_from_to_bytes() {
-        let mut fat = Fat32Media::new("testcase_01.img".to_string());
+        let mut fat = Fat32Media::new("/Volumes/RAMDisk/testcase_01.img".to_string());
         let entry = fat.get_entry("/1/66EC94BA").unwrap();
         let bytes = entry.e.to_bytes();
         assert_eq!(DirEntry::from_bytes_short(&bytes).unwrap(), entry.e);
@@ -2479,12 +2504,15 @@ mod test {
 
     #[test]
     fn test_mkdir() {
-        let mut fat = Fat32Media::new("testcase_01.img".to_string());
+        let mut fat = Fat32Media::new("/Volumes/RAMDisk/testcase_01.img".to_string());
     }
 
     use is_valid_short_name;
+    use is_valid_long_name;
     #[test]
-    fn test_is_valid_short_name() {
+    fn test_name() {
         assert!(is_valid_short_name("1"));
+        assert!(is_valid_long_name("[BOOT]"));
+        assert!(is_valid_long_name("x86_64-efi"));
     }
 }
