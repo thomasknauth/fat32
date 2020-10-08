@@ -192,7 +192,7 @@ struct Fat {
 
 impl Fat {
     // fn from_bytes(&mut self, &[u8]) {
-        
+
     // }
     // fn to_bytes(&mut self) -> &[u8] {
     // }
@@ -317,7 +317,7 @@ impl LongEntry {
         x[30..32].copy_from_slice(&self.name3[1].to_le_bytes());
         return x;
     }
-    
+
     fn name(&self) -> [u16;13] {
         let mut n: [u16;13] = [0;13];
         n[0] = self.name1[0];
@@ -450,7 +450,7 @@ impl DirEntry {
 
     fn print(&self) -> String {
         let mut s = String::new();
-        
+
         if (self.attr & ATTR_LONG_NAME_MASK) == ATTR_LONG_NAME {
             s.push_str("ATTR_LONG_NAME\n");
         }
@@ -472,7 +472,7 @@ impl DirEntry {
                 s.push_str(&format!("Invalid entry\n"));
             }
         }
-        
+
         return s;
     }
 
@@ -521,7 +521,7 @@ impl DirEntry {
         let mut main_part_len: usize = 8;
 
         // println!("{:?}", self);
-        
+
         for (i, elem) in self.name[0..8].iter().enumerate() {
             if *elem == 0x20 {
                     main_part_len = i;
@@ -579,7 +579,7 @@ impl DirEntry {
     /// Populate short entry from raw bytes.
     fn from_bytes_short(raw: &[u8]) -> Option<DirEntry> {
         let mut e = DirEntry::default();
-        
+
         let mut r = raw.split_at(11);
         e.name.copy_from_slice(r.0);
         r = r.1.split_at(1);
@@ -622,7 +622,7 @@ impl HybridEntry {
         }
         return None;
     }
-    
+
     // Serialize the entry. Produces zero or more `LongEntry`s and the
     // corresponding `DirEntry`. Since the output size is unknown,
     // return a vector of `u8`s.
@@ -632,7 +632,7 @@ impl HybridEntry {
         if self.long_name.len() == 0 {
             return self.e.to_bytes().to_vec();
         }
-        
+
         for (i, b) in self.long_name.encode_utf16().enumerate() {
             if (i % 13) == 0 {
                 long_entries.insert(0, LongEntry::new());
@@ -644,7 +644,7 @@ impl HybridEntry {
 
         long_entries.get_mut(0).unwrap().terminate_and_pad();
         long_entries.get_mut(0).unwrap().ord |= LAST_LONG_ENTRY;
-        
+
         let mut bytes: Vec<u8> = vec![];
         for long_entry in &long_entries {
             bytes.extend(long_entry.to_bytes().iter());
@@ -721,7 +721,7 @@ fn short_name_to_bytes(name: &str) -> [u8; 11] {
     for (idx, byte) in tokens[1].as_bytes().iter().enumerate() {
         r[idx+8] = *byte;
     }
-    
+
     return r;
 }
 
@@ -756,7 +756,7 @@ fn gen_short_name(long_name: &str, existing: &Vec<String>) -> Option<[u8;11]> {
         Some(x) => x,
         None => no_leading_periods.len()
     };
-    
+
     for c in no_leading_periods[0..last_dot_idx].as_bytes().iter() {
 
         if copied == 8 {
@@ -785,13 +785,13 @@ fn gen_short_name(long_name: &str, existing: &Vec<String>) -> Option<[u8;11]> {
         basis[6] = b'~';
         basis[7] = b'1';
     }
-    
+
     // TODO Take existing names into account to avoid clashing short
     // names.
     if !existing.is_empty() {
         unimplemented!();
     }
-    
+
     return Some(basis);
 }
 
@@ -912,7 +912,7 @@ fn count_of_clusters(bpb: &BIOSParameterBlock, fat32: &Fat32) -> u32 {
 
 // Resources
 // - https://blog.rust-lang.org/2015/05/11/traits.html
-// - 
+// -
 
 const FAT32_BYTES_PER_FAT_ENTRY: u32 = 4;
 
@@ -1044,7 +1044,7 @@ impl FileAction for SelftestCommand {
 
     fn handle_file(&mut self, entry: &HybridEntry) -> FatEntryState {
         println!("{} SelftestCommand::handle_file()", line!());
-        
+
         // On OSX, some services create files on the volume in the
         // background, e.g., the file system indexer. Ignore
         // files, that do not consist of 8 hexadecimal characters.
@@ -1358,14 +1358,14 @@ impl Fat32Media {
             self.write_sector_of_cluster(i, cluster, &zeroes);
         }
     }
-    
+
     /// @param cluster: any cluster in a chain
     /// @param free_fat_entries: clusters to append to the chain
     fn append_to_chain(&mut self, cluster: u32, free_fat_entries: &Vec<u32>) {
         assert!(free_fat_entries.len() > 0);
 
         println!("{} cluster= {}, free_fat_entries= {:?}", line!(), cluster, free_fat_entries);
-        
+
         let mut prev = cluster;
         let mut fat_entry = self.cluster_number_to_fat32_entry(prev);
         while !fat_entry.is_end_of_chain() {
@@ -1373,7 +1373,7 @@ impl Fat32Media {
             prev = fat_entry.read();
             fat_entry = self.cluster_number_to_fat32_entry(fat_entry.read());
         }
-        
+
         assert!(fat_entry.is_end_of_chain());
 
         for x in free_fat_entries {
@@ -1383,7 +1383,7 @@ impl Fat32Media {
 
         self.write_fat_entry(prev, FAT_END_OF_CHAIN);
     }
-    
+
     // Only delete empty files for now. Cannot unlink/free FAT entries/clusters yet.
     fn rm(&mut self, path: String) -> Errno {
         if path.ends_with("/") {
@@ -1409,13 +1409,13 @@ impl Fat32Media {
         // How to adapt the interface? Have a lookup operation return the index range as well as the entry, e.g.,
         // (std::ops::Range, HybridEntry)?
         for (r, x) in self.dir_entry_iter(cluster) {
-          
+
             println!("{}, rm(), {:?}", line!(), x);
 
             if x.e.is_free() {
                 continue;
             }
-            
+
             if !(x.e.is_file() || x.e.is_directory()) {
                 continue;
             }
@@ -1430,11 +1430,11 @@ impl Fat32Media {
             None => return Errno::ENOENT,
             Some(x) => (x.0, x.1)
         };
-        
+
         if e.e.is_directory() {
             return Errno::ENOSYS;
         }
-        
+
         if e.e.file_size > 0 {
             return Errno::ENOSYS;
         }
@@ -1514,9 +1514,9 @@ impl Fat32Media {
             assert!(left > 0);
             for sector in 0..self.bpb.sectors_per_cluster {
                 let mut buf: [u8; 512] = [0u8; 512];
-                
+
                 // println!("fn cp(), {}, left= {}", line!(), left);
-                
+
                 if left >= 512 {
                     src_f.read_exact(&mut buf).expect("");
                 } else {
@@ -1550,7 +1550,7 @@ impl Fat32Media {
             Some(e) => e.e.cluster_number(),
             None => panic!(),
         };
-        
+
         match self.add_dir_entry(parent_cluster, &dst_entry) {
             Errno::SUCCESS => return Errno::SUCCESS,
             err => return err
@@ -1577,7 +1577,7 @@ impl Fat32Media {
         }
         return Errno::SUCCESS;
     }
-    
+
     fn mkdir(&mut self, path: String) -> Result<HybridEntry, Errno> {
         // Idea 1:
         // touch(path) - creates entry in parent(path)
@@ -1717,7 +1717,7 @@ impl Fat32Media {
             self.f.write_all(&existing_entry.val.to_le_bytes()).expect("Error writing FAT32 entry.");
         }
     }
-    
+
     fn find_free_fat32_entries(&mut self, count: usize) -> Option<Vec<u32>> {
         let fat_entry_size: u32 = 4;
         let sector_size: u32 = 512;
@@ -1782,7 +1782,7 @@ impl Fat32Media {
         if entry.long_name.len() > 0 && !entry.e.is_free() {
             return Errno::EINVAL;
         }
-        
+
         // println!("{} fn add_dir_entry()", line!());
 
         let mut new_entry = entry.clone();
@@ -1805,7 +1805,7 @@ impl Fat32Media {
 
         let bytes = new_entry.to_bytes();
         assert!(bytes.len() % DIR_ENTRY_SIZE == 0);
-        
+
         if bytes.len() > 512 {
             // TODO Currently, the implementation only allocates a
             // single new cluster if there is insufficient space. The
@@ -1813,7 +1813,7 @@ impl Fat32Media {
             // conservative and fail if more space is required.
             return Errno::EINVAL;
         }
-        
+
         let num_entries = bytes.len() / DIR_ENTRY_SIZE;
         let mut free_idx: Option<usize> = None;
         let mut max_idx: usize = 0;
@@ -1823,7 +1823,7 @@ impl Fat32Media {
                 consecutive_free_entries += 1;
                 if consecutive_free_entries == num_entries && free_idx == None {
                     free_idx = Some(range.start - consecutive_free_entries + 1);
-                }                    
+                }
             } else {
                 consecutive_free_entries = 0;
                 if (e.e.is_file() || e.e.is_directory()) &&
@@ -1860,7 +1860,7 @@ impl Fat32Media {
         self.write_dir_entry(cluster, free_idx.unwrap(), &new_entry.to_bytes());
         return Errno::SUCCESS;
     }
-    
+
     /// @param cluster First(!) cluster of a directory.
     pub fn write_dir_entry(&mut self, cluster: u32, idx: usize, bytes: &Vec<u8>) {
         println!("fn write_dir_entry() {} cluster= {}, idx= {}",
@@ -1876,7 +1876,7 @@ impl Fat32Media {
         // must be updated.
         let entries_first_sector = std::cmp::min(entries_to_write, entries_per_sector - idx_within_sector);
         let entries_second_sector = entries_to_write - entries_first_sector;
-        
+
         self.read_sector_of_chain(sector, cluster, &mut data);
         // let num_entries = bytes.len() / DIR_ENTRY_SIZE;
         // println!("{} num_entries= {}", line!(), num_entries);
@@ -1996,7 +1996,7 @@ impl<'a> Fat32Media {
                 let long_entry = LongEntry::from_bytes(&sector_data[DIR_ENTRY_SIZE*i..DIR_ENTRY_SIZE*(i+1)]).unwrap();
 
                 // println!("{} {:?}", line!(), dir_entry);
-                
+
                 // Special case where all subsequent entries are free and need
                 // not be examined.
                 if dir_entry.e.is_free_and_following() {
@@ -2016,7 +2016,7 @@ impl<'a> Fat32Media {
                         // Long entry must be followed by short
                         // entry. This is another long entry.
                         assert!(long_name.is_empty());
-                        
+
                         // assemble long name
                         if (long_entry.ord & LAST_LONG_ENTRY) != 0 {
                             long_name_buf = [0; LONG_NAME_MAX_CHARS];
@@ -2024,7 +2024,7 @@ impl<'a> Fat32Media {
                         }
 
                         assert_eq!(long_entry.checksum, checksum);
-                        
+
                         let ord = long_entry.ord & LONG_ENTRY_ORD_MASK;
                         let start: usize = (CHARS_PER_LONG_ENTRY*(ord-1) as u32).try_into().unwrap();
                         let end  : usize = (CHARS_PER_LONG_ENTRY*(ord) as u32).try_into().unwrap();
@@ -2063,7 +2063,7 @@ impl<'a> Fat32Media {
                             //            dir_entry.name);
                         }
                         dir_entry.long_name = long_name.clone();
-                        
+
                         // println!("short entry checksum {}", dir_entry.checksum());
                         match handler.handle_file(&dir_entry) {
                             FatEntryState::NEXT => (),
@@ -2203,7 +2203,7 @@ impl<'a> Fat32Media {
 
     fn read_sector_of_cluster(&mut self, sector: u8, cluster: u32, data: &mut [u8; 512]) {
         assert!(sector < self.bpb.sectors_per_cluster);
-            
+
         let file_offset = (self.first_sector_of_cluster(cluster) +
                            sector as u32 + self.mbr.partitions[0].offset_lba) * 512;
         assert!(self.f.seek(SeekFrom::Start(file_offset.into())).is_ok());
@@ -2302,7 +2302,7 @@ fn main() {
 
     assert!(fat.mbr.sig[0] == 0x55);
     assert!(fat.mbr.sig[1] == 0xAA);
-    
+
     // FAT12/16 size. Must be zero for FAT32.
     assert!(fat.bpb.total_secs_16 == 0);
     assert!(fat.bpb.secs_per_fat_16 == 0);
@@ -2448,7 +2448,7 @@ mod test {
     }
 
     use HybridEntry;
-    
+
     #[test]
     fn test_long_entry() {
         let mut e = match HybridEntry::from_name("The quick brown.fox") {
