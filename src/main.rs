@@ -693,21 +693,10 @@ impl HybridEntry {
     }
 }
 
-/// TODO Relax the currently too restrictive implementation.
 fn is_valid_long_name(name: &str) -> bool {
 
     let special_short_chars = "$%'-_@~`!(){}^#& ";
     let special_long_chars  = "+,;=[].";
-
-    if !name.is_ascii() {
-        return false;
-    }
-
-    // This check is correct only iff the previous check asserted the
-    // name only has ASCII characters.
-    if name.len() > 255 {
-        return false;
-    }
 
     if !name.chars().all(|b| b.is_alphanumeric() || special_short_chars.contains(b) ||
                          special_long_chars.contains(b)) {
