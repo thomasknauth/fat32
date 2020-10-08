@@ -2256,6 +2256,7 @@ fn repl(fat: &mut Fat32Media) {
                 };
                 let root_cluster = fat.fat32.root_cluster;
                 fat.parse_directory(root_cluster, &mut action);
+                println!(".");
                 for e in &action.entries {
                     print!("{}", e.print());
                 }
