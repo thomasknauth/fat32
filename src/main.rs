@@ -2089,6 +2089,7 @@ impl<'a> Fat32Media {
 
                         }
 
+                        dir_entry.long_name = long_name.clone();
                         match handler.handle_dir(&dir_entry) {
                             FatEntryState::VISIT => visit_dir.push(dir_entry),
                             FatEntryState::NEXT => (),
