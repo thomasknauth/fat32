@@ -43,7 +43,7 @@ DISK_512_SECTORS=2097152 # 1GB
 	hdiutil mount $$DEV
 
 # Create a disk image for testing. Assumes OSX as the platform.
-$(PREFIX)/test.img: $(PREFIX)
+test.img:
 	dd if=/dev/zero of=$@ bs=1m count=128 conv=sparse
 	DEV=`hdiutil attach -imagekey diskimage-class=CRawDiskImage -nomount $@` && \
 	diskutil eraseDisk FAT32 NAME MBRFormat $$DEV && \
@@ -57,6 +57,9 @@ $(PREFIX)/empty.img: $(PREFIX)
 	diskutil eraseDisk FAT32 NAME MBRFormat $$DEV && \
 	hdiutil eject $$DEV
 
+$(PREFIX)/test.img: test.img
+	cp $< $@
+
 $(PREFIX)/testcase_01.img: testcase_01.img
 	cp $< $@
 
@@ -67,7 +70,7 @@ $(PREFIX)/testcase_03.img: $(PREFIX)/empty.img
 	cp $< $@
 
 .PHONY: testfiles
-testfiles: $(PREFIX)/test.img $(PREFIX)/empty.img  $(PREFIX)/testcase_01.img $(PREFIX)/testcase_02.img $(PREFIX)/testcase_01.img
+testfiles: $(PREFIX)/test.img $(PREFIX)/empty.img  $(PREFIX)/testcase_01.img $(PREFIX)/testcase_02.img $(PREFIX)/testcase_03.img
 	cp testcase_01.img $(PREFIX)/
 	cp $(PREFIX)/empty.img $(PREFIX)/testcase_02.img
 	cp $(PREFIX)/empty.img $(PREFIX)/testcase_03.img
@@ -81,6 +84,7 @@ check: target/debug/fat32 testfiles
 .PHONY: clean
 clean:
 	$(RM) devnode
+	$(RM) $(addprefix $(PREFIX)/, test.img empty.img testcase_01.img testcase_02.img testcase_03.img)
 
 .PHONY: distclean
 distclean: clean
