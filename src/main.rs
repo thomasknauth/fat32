@@ -476,6 +476,10 @@ impl DirEntry {
         return s;
     }
 
+    fn is_volume_label(&self) -> bool {
+        (self.attr & ATTR_VOLUME_ID) != 0
+    }
+
     fn is_file(&self) -> bool {
         assert!(!self.is_free());
 
@@ -672,6 +676,10 @@ impl HybridEntry {
 
     fn from_short(e: &DirEntry) -> HybridEntry {
         HybridEntry { e: *e, long_name: String::new() }
+    }
+
+    fn cmp(&self, s: &str) -> bool {
+        return self.e.short_name_as_str() == s || self.long_name == s;
     }
 
     fn print(&self) -> String {
@@ -938,65 +946,28 @@ trait FileAction {
     fn exit(&mut self);
 }
 
-// List a specific directory.
-struct LsCommand {
-    path: String,
-    prefix: String,
-    entries: Vec<HybridEntry>
-}
+fn ls(fs: &mut Fat32Media, path: &str) -> Result<Vec<HybridEntry>, Errno> {
+    let e = match fs.get_entry(path) {
+        None => return Err(Errno::ENOENT),
+        Some(x) => x
+    };
 
-impl LsCommand {
-    fn new(path: String) -> LsCommand {
-        LsCommand { path: path, prefix: "/".to_string(), entries: vec![] }
-    }
-}
-
-impl FileAction for LsCommand {
-
-    fn consume(&mut self, _data: &[u8; 512], _size: usize) {
-        panic!("");
+    if e.e.is_file() {
+        return Ok(vec![e]);
     }
 
-    fn handle_file(&mut self, e: &HybridEntry) -> FatEntryState {
-        // println!("{}: self.path = {}, self.prefix= {}", line!(), self.path, self.prefix);
-
-        // self.path == self.prefix is true when ls'ing a directory.
-        // self.path == concat(...) is true when ls'ing a file.
-        if (self.path == self.prefix) ||
-            (self.path == concat(&self.prefix, &e.e.short_name_as_str())) {
-            self.entries.push(e.clone());
+    let mut v = Vec::new();
+    for (range, entry) in fs.dir_entry_iter(e.e.cluster_number()) {
+        if entry.e.is_free() {
+            continue;
         }
-        return FatEntryState::NEXT;
-    }
-
-    fn handle_dir(&mut self, e: &HybridEntry) -> FatEntryState {
-        // println!("{}: self.path = {}, self.prefix= {}", line!(), self.path, self.prefix);
-        if self.path == self.prefix {
-            self.entries.push(e.clone());
-            return FatEntryState::NEXT;
-        } else {
-            // let path: Vec<&str> = self.path.split('/').collect();
-            //if path[1] == e.short_name_as_str() {
-            //    self.path = path[1..].join("/");
-            if self.path.starts_with(&(concat(&self.prefix, &e.e.short_name_as_str()) + "/")) {
-                return FatEntryState::VISIT;
-            } else {
-                return FatEntryState::NEXT;
-            }
+        if entry.e.is_volume_label() {
+            continue;
         }
+        v.push(entry);
     }
 
-    fn enter(&mut self, dir: &HybridEntry) {
-        self.prefix += &(dir.e.short_name_as_str() + &"/".to_owned());
-        // println!("enter self.prefix= {}", self.prefix);
-    }
-
-    fn exit(&mut self) {
-        let mut p: Vec<&str> = self.prefix.split('/').collect();
-        p.pop();
-        self.prefix = p.join("/");
-        // println!("exit self.prefix= {}", self.prefix);
-    }
+    return Ok(v);
 }
 
 // List the entire file system.
@@ -2132,6 +2103,9 @@ impl<'a> Fat32Media {
     /// Allocate Table.
     fn root(&self) -> HybridEntry {
         let mut e = DirEntry::default();
+        let special_short_chars = "$%'-_@~`!(){}^#& ";
+        e.name.copy_from_slice(&special_short_chars.as_bytes()[0..11]);
+        e.attr = ATTR_DIRECTORY;
         e.first_cluster_low = self.fat32.root_cluster.try_into().unwrap();
         HybridEntry { e: e, long_name: String::new() }
     }
@@ -2249,15 +2223,12 @@ fn repl(fat: &mut Fat32Media) {
             "exit" => return,
             "ls" => {
                 assert!(tokens.len() == 2);
-                let mut action: LsCommand = LsCommand {
-                    path: tokens[1].to_string(),
-                    prefix: "/".to_string(),
-                    entries: vec![]
+                let entries = match ls(fat, &tokens[1].to_string()) {
+                    Err(x) => { println!("{:?}", x); continue; },
+                    Ok(x) => x
                 };
-                let root_cluster = fat.fat32.root_cluster;
-                fat.parse_directory(root_cluster, &mut action);
                 println!(".");
-                for e in &action.entries {
+                for e in entries {
                     print!("{}", e.print());
                 }
             },
@@ -2344,15 +2315,15 @@ fn main() {
             repl(&mut fat);
         }
         SubCommand::Ls(t) => {
-            let mut action: LsCommand = LsCommand {
-                path: t.path,
-                prefix: "/".to_string(),
-                entries: vec![]
+            match ls(&mut fat, &t.path) {
+                Err(x) => println!("{:?}", x),
+                Ok(x) => {
+                    println!(".");
+                    for e in x {
+                        print!("{}", e.print());
+                    }
+                }
             };
-            fat.parse_directory(root_cluster, &mut action);
-            for e in &action.entries {
-                print!("{}", e.print());
-            }
         },
         SubCommand::ListFsCommand(_t) => {
             let mut action = ListFs {
@@ -2373,38 +2344,34 @@ fn main() {
 #[cfg(test)]
 mod test {
     use super::Fat32Media;
-    use LsCommand;
     use Errno;
+    use ls;
+    use Errno::ENOENT;
 
     #[test]
     fn test_ls_01() {
         let mut fat = Fat32Media::new("/Volumes/RAMDisk/testcase_01.img".to_string());
-        let mut action: LsCommand = LsCommand::new("/".to_string());
-        fat.parse_directory(fat.fat32.root_cluster, &mut action);
+        let entries = ls(&mut fat, &"/".to_string()).unwrap();
+        let mut x = entries.iter().map(|x| x.e.short_name_as_str()).collect::<Vec<String>>();
 
-        let mut x = action.entries.iter().map(|x| x.e.short_name_as_str()).collect::<Vec<String>>();
-        x.sort();
         assert_eq!(x, (0..10).map(|x| x.to_string()).collect::<Vec<String>>());
-        for e in &action.entries {
+        for e in entries {
             assert!(e.e.is_directory());
         }
 
-        action = LsCommand::new("/1/".to_string());
-        fat.parse_directory(fat.fat32.root_cluster, &mut action);
-        let x = action.entries.iter().map(|x| x.e.short_name_as_str()).collect::<Vec<String>>();
-        let expected_entries = ["66EC94BA", "83186062", "590D2E74", "EE45872D", "897965E7", "E4CB5817"].iter().map(|x| x.to_string()).collect::<Vec<String>>();
+        let entries = ls(&mut fat, &"/1/".to_string()).unwrap();
+        let x = entries.iter().map(|x| x.e.short_name_as_str()).collect::<Vec<String>>();
+        let expected_entries = [".", "..", "66EC94BA", "83186062", "590D2E74", "EE45872D", "897965E7", "E4CB5817"].iter().map(|x| x.to_string()).collect::<Vec<String>>();
         for expected in &expected_entries {
             assert!(x.contains(expected));
         }
 
-        action = LsCommand::new("/nonexist/".to_string());
-        fat.parse_directory(fat.fat32.root_cluster, &mut action);
-        assert!(action.entries.is_empty());
+        assert_eq!(ls(&mut fat, &"/nonexist/".to_string()).unwrap_err(), Errno::ENOENT);
 
-        action = LsCommand::new("/4/E9068190".to_string());
-        fat.parse_directory(fat.fat32.root_cluster, &mut action);
-        let x = action.entries.iter().map(|x| x.e.short_name_as_str()).collect::<Vec<String>>();
+        let entries = ls(&mut fat, &"/4/E9068190".to_string()).unwrap();
+        let x = entries.iter().map(|x| x.e.short_name_as_str()).collect::<Vec<String>>();
         assert!(x.contains(&"E9068190".to_string()));
+        assert!(entries[0].e.is_file());
     }
 
     #[test]
