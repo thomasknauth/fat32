@@ -2,8 +2,13 @@
 # Can not longer just use rustc to build the project since we have
 # external dependencies (sha2 crate). cargo downloads the dependencies
 # and builds it for the target platform.
+
+ifeq ($(DEBUG),0)
+BUILD_OPTIONS=--release
+endif
+
 target/debug/fat32: src/main.rs
-	cargo build
+	cargo build $(BUILD_OPTIONS)
 
 # Mount the disk image, e.g., for manual inspection.
 .PHONY: mount
@@ -35,7 +40,7 @@ blah:
 	echo $(shell date)
 	echo $(shell cat /tmp/a)
 
-DISK_512_SECTORS=2097152 # 1GB
+DISK_512_SECTORS=6291456 # 3 GB
 
 /Volumes/RAMDisk:
 	DEV=$(shell hdiutil attach -nomount ram://$(DISK_512_SECTORS)) && \
@@ -51,8 +56,11 @@ test.img:
 	python3 ./fsck.py /Volumes/NAME
 	hdiutil detach /Volumes/NAME
 
-$(PREFIX)/empty.img: $(PREFIX)
-	dd if=/dev/zero of=$@ bs=1m count=128
+$(PREFIX)/empty.img: $(PREFIX)/empty-128.img
+	mv $^ $@
+
+$(PREFIX)/empty-%.img: $(PREFIX)
+	dd if=/dev/zero of=$@ bs=1m count=$*
 	DEV=`hdiutil attach -imagekey diskimage-class=CRawDiskImage -nomount $@` && \
 	diskutil eraseDisk FAT32 NAME MBRFormat $$DEV && \
 	hdiutil eject $$DEV
