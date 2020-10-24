@@ -1433,6 +1433,11 @@ impl Fat32Media {
             return Errno::EINVAL;
         }
 
+        let parent_cluster = match self.get_entry(&dst_path.parent().unwrap().to_str().unwrap().to_string()) {
+            Some(e) => e.e.cluster_number(),
+            None => return Errno::ENOENT
+        };
+
         let src_path = src.strip_prefix(&"host://".to_string()).unwrap();
         let src_meta = std::fs::metadata(src_path).expect("");
         if !src_meta.is_file() {
@@ -1459,68 +1464,62 @@ impl Fat32Media {
             Some(x) => x
         };
 
-        // if src_meta.len() == 0 {
-        //     // TODO preserve metadata such as creation/access/modification time.
-        //     return Errno::SUCCESS;
-        // }
+        // TODO preserve metadata such as creation/access/modification
+        // time.
 
         let len_in_clusters = round_up_div(src_meta.len(),
                                            (self.bpb.bytes_per_sec * self.bpb.sectors_per_cluster as u16).into());
-        assert!(len_in_clusters > 0);
 
-        let clusters =
-            match self.find_free_fat32_entries(len_in_clusters.try_into().unwrap()) {
-                Some(v) => v,
-                None => return Errno::ENOSPC,
-            };
+        if len_in_clusters > 0 {
+            let clusters =
+                match self.find_free_fat32_entries(len_in_clusters.try_into().unwrap()) {
+                    Some(v) => v,
+                    None => return Errno::ENOSPC,
+                };
         // println!("fn cp(), {}, src size= {}, clusters= {:?}", line!(), src_meta.len(), clusters);
 
-        dst_entry.e.set_cluster_number(clusters[0]);
-        dst_entry.e.file_size = src_meta.len().try_into().unwrap();
+            dst_entry.e.set_cluster_number(clusters[0]);
+            dst_entry.e.file_size = src_meta.len().try_into().unwrap();
 
-        // copy content from host to FAT
-        let mut left: u64 = src_meta.len();
-        let mut src_f = std::fs::File::open(src_path).expect("");
-        for cluster in &clusters {
-            assert!(left > 0);
-            for sector in 0..self.bpb.sectors_per_cluster {
-                let mut buf: [u8; 512] = [0u8; 512];
+            // copy content from host to FAT
+            let mut left: u64 = src_meta.len();
+            let mut src_f = std::fs::File::open(src_path).expect("");
+            for cluster in &clusters {
+                assert!(left > 0);
+                for sector in 0..self.bpb.sectors_per_cluster {
+                    let mut buf: [u8; 512] = [0u8; 512];
 
-                // println!("fn cp(), {}, left= {}", line!(), left);
+                    // println!("fn cp(), {}, left= {}", line!(), left);
 
-                if left >= 512 {
-                    src_f.read_exact(&mut buf).expect("");
-                } else {
-                    let mut x = Vec::new();
-                    src_f.read_to_end(&mut x).expect("");
-                    assert!(x.len() == left.try_into().unwrap());
-                    for (i, b) in x.iter().enumerate() {
-                        buf[i] = *b;
+                    if left >= 512 {
+                        src_f.read_exact(&mut buf).expect("");
+                    } else {
+                        let mut x = Vec::new();
+                        src_f.read_to_end(&mut x).expect("");
+                        assert!(x.len() == left.try_into().unwrap());
+                        for (i, b) in x.iter().enumerate() {
+                            buf[i] = *b;
+                        }
                     }
-                }
 
-                self.write_sector_of_cluster(sector, *cluster, &buf);
+                    self.write_sector_of_cluster(sector, *cluster, &buf);
 
-                if left <= 512 {
-                    left = 0;
-                    break;
+                    if left <= 512 {
+                        left = 0;
+                        break;
+                    }
+                    left -= 512;
                 }
-                left -= 512;
             }
-        }
 
-        // Link clusters into a chain.
-        let mut prev_cluster = dst_entry.e.cluster_number();
-        for cluster in &clusters[1..] {
-            self.write_fat_entry(prev_cluster, *cluster);
-            prev_cluster = *cluster;
+            // Link clusters into a chain.
+            let mut prev_cluster = dst_entry.e.cluster_number();
+            for cluster in &clusters[1..] {
+                self.write_fat_entry(prev_cluster, *cluster);
+                prev_cluster = *cluster;
+            }
+            self.write_fat_entry(prev_cluster, FAT_END_OF_CHAIN);
         }
-        self.write_fat_entry(prev_cluster, FAT_END_OF_CHAIN);
-
-        let parent_cluster = match self.get_entry(&dst_path.parent().unwrap().to_str().unwrap().to_string()) {
-            Some(e) => e.e.cluster_number(),
-            None => panic!(),
-        };
 
         match self.add_dir_entry(parent_cluster, &dst_entry) {
             Errno::SUCCESS => return Errno::SUCCESS,
