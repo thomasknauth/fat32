@@ -213,7 +213,8 @@ struct Fat32Media {
      f: std::fs::File,
      mbr: MasterBootRecord,
      bpb: BIOSParameterBlock,
-     fat32: Fat32
+     fat32: Fat32,
+     next_free: u32
 }
 
 const ATTR_READ_ONLY:u8 = 0x1;
@@ -1693,11 +1694,12 @@ impl Fat32Media {
         let sector_size: u32 = 512;
         let max_cluster_id = sector_size * self.fat32.secs_per_fat_32 / fat_entry_size;
         let mut entries: Vec<u32> = vec![];
-        for i in 0..max_cluster_id {
+        for i in self.next_free..max_cluster_id {
             let entry = self.cluster_number_to_fat32_entry(i);
             if entry.is_empty() {
                 entries.push(i);
                 if entries.len() == count {
+                    self.next_free = i;
                     return Some(entries);
                 }
             }
@@ -1946,7 +1948,7 @@ impl<'a> Fat32Media {
 
         assert!(bpb.bytes_per_sec == 512);
 
-        Fat32Media { f: f, mbr: mbr, bpb: bpb, fat32: fat32, }
+        Fat32Media { f: f, mbr: mbr, bpb: bpb, fat32: fat32, next_free: 0 }
     }
 
     fn parse_directory(&'a mut self, cluster_id: u32, handler: &mut dyn FileAction) {
