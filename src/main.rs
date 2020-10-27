@@ -1485,6 +1485,7 @@ impl Fat32Media {
             // copy content from host to FAT
             let mut left: u64 = src_meta.len();
             let mut src_f = std::fs::File::open(src_path).expect("");
+            let mut src_reader = io::BufReader::new(src_f);
             for cluster in &clusters {
                 assert!(left > 0);
                 for sector in 0..self.bpb.sectors_per_cluster {
@@ -1493,10 +1494,10 @@ impl Fat32Media {
                     // println!("fn cp(), {}, left= {}", line!(), left);
 
                     if left >= 512 {
-                        src_f.read_exact(&mut buf).expect("");
+                        src_reader.read_exact(&mut buf).expect("");
                     } else {
                         let mut x = Vec::new();
-                        src_f.read_to_end(&mut x).expect("");
+                        src_reader.read_to_end(&mut x).expect("");
                         assert!(x.len() == left.try_into().unwrap());
                         for (i, b) in x.iter().enumerate() {
                             buf[i] = *b;
