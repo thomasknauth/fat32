@@ -2357,6 +2357,13 @@ mod test {
     use ls;
     use Errno::ENOENT;
 
+    // Call this at beginning of each test to capture log output
+    // during the test. By default no log output is captured during
+    // tests.
+    fn capture_logging_for_tests() {
+        let _ = env_logger::builder().is_test(true).try_init();
+    }
+
     #[test]
     fn test_ls_01() {
         let mut fat = Fat32Media::new("/Volumes/RAMDisk/testcase_01.img".to_string());
