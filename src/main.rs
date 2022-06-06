@@ -813,7 +813,7 @@ use std::mem;
 use std::str;
 
 extern crate clap;
-use clap::Clap;
+use clap::Parser;
 extern crate sha2;
 use sha2::{Sha256, Digest};
 
@@ -823,7 +823,7 @@ extern crate rand;
 use rand::Rng;
 use rand::distributions::Alphanumeric;
 
-#[derive(Clap)]
+#[derive(Parser)]
 #[clap(version = "0.1", author = "Thomas K.")]
 struct Opts {
     #[clap(short,long, default_value = "/Volumes/RAMDisk/test.img")]
@@ -832,7 +832,7 @@ struct Opts {
     subcmd: SubCommand
 }
 
-#[derive(Clap)]
+#[derive(Parser)]
 enum SubCommand {
     #[clap(version = "0.1")]
     Cat(Cat),
@@ -843,31 +843,31 @@ enum SubCommand {
     Selftest(Selftest)
 }
 
-#[derive(Clap)]
+#[derive(Parser)]
 struct Cat {
     #[clap(short)]
     path: String
 }
 
-#[derive(Clap)]
+#[derive(Parser)]
 struct Info {
 }
 
-#[derive(Clap)]
+#[derive(Parser)]
 struct Ls {
     #[clap(short, default_value = "/")]
     path: String
 }
 
-#[derive(Clap)]
+#[derive(Parser)]
 struct ListFsCommand {
 }
 
-#[derive(Clap)]
+#[derive(Parser)]
 struct Selftest {
 }
 
-#[derive(Clap)]
+#[derive(Parser)]
 struct InteractiveCommand {
 }
 
