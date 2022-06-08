@@ -2205,6 +2205,79 @@ impl<'a> Fat32Media {
     }
 }
 
+type ICommand = fn(tokens: Vec<&str>, fat: &mut Fat32Media);
+
+fn ls_command(tokens: Vec<&str>, fat: &mut Fat32Media) {
+
+    if tokens.len() != 2 {
+        println!("Usage: ls path");
+        return;
+    }
+
+    let entries = match ls(fat, &tokens[1].to_string()) {
+        Err(x) => { println!("{:?}", x); return },
+        Ok(x) => x
+    };
+
+    println!(".");
+
+    for e in entries {
+        print!("{}", e.print());
+    }
+}
+
+fn touch_command(tokens: Vec<&str>, fat: &mut Fat32Media) {
+
+    if tokens.len() != 2 {
+        println!("Usage: touch path1 path2");
+        return;
+    }
+
+    match fat.touch(&tokens[1].to_string()) {
+        Ok(_) => (),
+        Err(e) => println!("error {:?}", e),
+    };
+}
+
+fn rm_command(tokens: Vec<&str>, fat: &mut Fat32Media) {
+
+    if tokens.len() != 2 {
+        println!("Usage: rm path1");
+        return;
+    }
+
+    match fat.rm(tokens[1].to_string()) {
+        Errno::SUCCESS => (),
+        e => println!("error {:?}", e),
+    };
+}
+
+fn cp_command(tokens: Vec<&str>, fat: &mut Fat32Media) {
+
+    if tokens.len() != 3 {
+        println!("Usage: cp source-path destination-path");
+        return;
+    }
+
+    match fat.cp(&tokens[1].to_string(), &tokens[2].to_string()) {
+        Errno::SUCCESS => (),
+        e => println!("error {:?}", e),
+    }
+}
+
+fn mkdir_command(tokens: Vec<&str>, fat: &mut Fat32Media) {
+
+    if tokens.len() != 2 {
+        println!("Usage: mkdir path");
+        return;
+    }
+
+    match fat.mkdir(tokens[1].to_string()) {
+        Err(e) => println!("error {:?}", e),
+        _ => ()
+    }
+}
+
 fn repl(fat: &mut Fat32Media) {
     loop {
         print!("> ");
