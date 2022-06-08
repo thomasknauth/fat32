@@ -210,11 +210,12 @@ impl Index<usize> for Fat {
 // %%%%%%%%% End of playground
 
 struct Fat32Media {
-     f: std::fs::File,
-     mbr: MasterBootRecord,
-     bpb: BIOSParameterBlock,
-     fat32: Fat32,
-     next_free: u32
+    fname: String,
+    f: std::fs::File,
+    mbr: MasterBootRecord,
+    bpb: BIOSParameterBlock,
+    fat32: Fat32,
+    next_free: u32
 }
 
 const ATTR_READ_ONLY:u8 = 0x1;
@@ -1951,7 +1952,7 @@ impl<'a> Fat32Media {
 
         assert!(bpb.bytes_per_sec == 512);
 
-        Fat32Media { f: f, mbr: mbr, bpb: bpb, fat32: fat32, next_free: 0 }
+        Fat32Media { fname: filename, f: f, mbr: mbr, bpb: bpb, fat32: fat32, next_free: 0 }
     }
 
     fn parse_directory(&'a mut self, cluster_id: u32, handler: &mut dyn FileAction) {
