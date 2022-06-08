@@ -2279,6 +2279,15 @@ fn mkdir_command(tokens: Vec<&str>, fat: &mut Fat32Media) {
 }
 
 fn repl(fat: &mut Fat32Media) {
+
+    use std::collections::HashMap;
+    let mut cmds: HashMap<String, ICommand> = HashMap::new();
+    cmds.insert("ls".to_string(), ls_command);
+    cmds.insert("touch".to_string(), touch_command);
+    cmds.insert("rm".to_string(), rm_command);
+    cmds.insert("cp".to_string(), cp_command);
+    cmds.insert("mkdir".to_string(), mkdir_command);
+
     loop {
         print!("> ");
         std::io::stdout().flush().expect("");
@@ -2296,51 +2305,16 @@ fn repl(fat: &mut Fat32Media) {
             continue;
         }
 
-        match tokens[0] {
-            "exit" => return,
-            "ls" => {
-                assert!(tokens.len() == 2);
-                let entries = match ls(fat, &tokens[1].to_string()) {
-                    Err(x) => { println!("{:?}", x); continue; },
-                    Ok(x) => x
-                };
-                println!(".");
-                for e in entries {
-                    print!("{}", e.print());
-                }
-            },
-            "touch" => {
-                assert!(tokens.len() == 2);
-                let r = fat.touch(&tokens[1].to_string());
-                match r {
-                    Ok(_) => continue,
-                    Err(e) => println!("error {:?}", e),
-                }
-            },
-            "rm" => {
-                assert!(tokens.len() == 2);
-                let r = fat.rm(tokens[1].to_string());
-                match r {
-                    Errno::SUCCESS => continue,
-                    e => println!("error {:?}", e),
-                }
-            },
-            "cp" => {
-                assert!(tokens.len() == 3);
-                let src = tokens[1].to_string();
-                let dst = tokens[2].to_string();
-                match fat.cp(&src, &dst) {
-                    Errno::SUCCESS => continue,
-                    e => println!("error {:?}", e),
-                }
-            },
-            "mkdir" => {
-                match fat.mkdir(tokens[1].to_string()) {
-                    Err(e) => println!("error {:?}", e),
-                    _ => continue,
-                }
-            },
-            _ => println!("unknown command"),
+        if tokens[0] == "exit" {
+            return;
+        }
+
+        match cmds.get(tokens[0]) {
+            Some(f) => f(tokens, fat),
+            None => {
+                let s = cmds.keys().map(|x| x).collect::<Vec<&String>>();
+                println!("Unknown command. Try one of: {:?}", s);
+            }
         }
     }
 }
