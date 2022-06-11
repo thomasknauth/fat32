@@ -50,7 +50,7 @@
 // simple.
 
 
-#[derive(Debug,Copy,Clone)]
+#[derive(Debug,Default,Copy,Clone)]
 #[repr(C)]
 #[repr(packed)]
 struct PartitionTable { // Offset in bytes
@@ -64,6 +64,25 @@ struct PartitionTable { // Offset in bytes
     end_s: u8,          // 7
     offset_lba: u32,    // 8
     size_sectors: u32   // 12
+}
+
+const PART_TYPE_FAT32_WITH_LBA_ADDRESSING: u8 = 11;
+
+impl PartitionTable {
+    fn new(sz: usize) -> PartitionTable {
+        let mut x = PartitionTable::default();
+        x.start_c = 254;
+        x.start_h = 255;
+        x.start_s = 255;
+        x.partition_type = PART_TYPE_FAT32_WITH_LBA_ADDRESSING;
+        x.end_c = 254;
+        x.end_h = 255;
+        x.end_s = 255;
+        // This value seems to grow with parition size. 128M disk has 63 here, while 2G disk has 2048.
+        x.offset_lba = 63;
+        x.size_sectors = (sz / 512) as u32 - x.offset_lba;
+        x
+    }
 }
 
 // BytesPerSector	2	0x000B
@@ -143,7 +162,7 @@ struct Fat32 {
     file_sys_type: [u8; 8]
 }
 
-#[derive(Debug,Copy,Clone)]
+#[derive(Debug,Default,Copy,Clone)]
 #[repr(C)]
 #[repr(packed)]
 struct MasterBootRecord {
@@ -153,6 +172,20 @@ struct MasterBootRecord {
     bootstrap_code_4: [u16; 1],      // Skip first 446 bytes. Cannot use bootstrap_code: [u8; 446] for some reason.
     partitions: [PartitionTable; 4],
     sig: [u8; 2]
+}
+
+// Compile-time assert for the size of struct MasterBootRecord.
+const _: [u8; 512] = [0; std::mem::size_of::<MasterBootRecord>()];
+
+impl MasterBootRecord {
+
+    fn new(pt: &PartitionTable) -> MasterBootRecord {
+        let mut x = MasterBootRecord::default();
+        x.partitions[0] = pt.clone();
+        x.sig[0] = 0x55;
+        x.sig[1] = 0xAA;
+        x
+    }
 }
 
 /// Size of a DirEntry in bytes.
