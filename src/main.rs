@@ -2433,6 +2433,7 @@ fn main() {
 
 #[cfg(test)]
 mod test {
+    use super::*;
     use super::Fat32Media;
     use Errno;
     use ls;
@@ -2569,5 +2570,40 @@ mod test {
         assert!(is_valid_short_name("1"));
         assert!(is_valid_long_name("[BOOT]"));
         assert!(is_valid_long_name("x86_64-efi"));
+    }
+
+    use std::process::Command;
+    #[test]
+    /// Test initialization of a new disk. Write the master boot
+    /// record containing a single partition covering all the
+    /// available disk space.
+    fn test_format_disk() -> std::io::Result<()> {
+        const FN: &str = "/Volumes/RAMDisk/d";
+        let sz: usize = 128 * 1024 * 1024;
+        let pt = PartitionTable::new(sz);
+        let mbr = MasterBootRecord::new(&pt);
+        let mut f = OpenOptions::new().write(true).create(true).open(FN)?;
+        let bytes: [u8; 512] = unsafe { mem::transmute(mbr) };
+        f.write_all(&bytes)?;
+        // Write a single byte at offset `sz - 1`. Depending on the
+        // underlying file system, the file should now have the
+        // desired size and hopefully be sparse.
+        f.seek(SeekFrom::Start((sz - 1) as u64))?;
+        let b = [0u8; 1];
+        f.write(&b)?;
+        f.sync_all()?;
+
+        let out = Command::new("hdiutil").args(["attach", "-imagekey", "diskimage-class=CRawDiskImage", "-nomount", FN]).output().unwrap();
+
+        let s = std::str::from_utf8(&out.stdout).unwrap();
+        let words: Vec<&str> = s.split(char::is_whitespace).collect();
+        // First word of `hdiutil` output should be path of the newly
+        // created device.
+        let device = words[0];
+
+        let status = Command::new("hdiutil").args(["eject", device]).status().unwrap();
+        assert!(status.success());
+        std::fs::remove_file(FN)?;
+        Ok(())
     }
 }
