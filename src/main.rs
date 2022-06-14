@@ -2432,6 +2432,21 @@ fn main() {
     }
 }
 
+fn format_disk<T: Seek + Write>(f: &mut T, mbr: &MasterBootRecord) -> io::Result<()> {
+    let bytes: [u8; 512] = unsafe { mem::transmute(*mbr) };
+    f.seek(SeekFrom::Start(0))?;
+    f.write_all(&bytes)?;
+    // Write a single byte at the end of the disk. If `f` points to a
+    // file on a regular file system (as opposed to an actual device),
+    // the file should now have the desired size and hopefully be
+    // sparse.
+    let disk_size: u64 = (mbr.partitions[0].size_sectors * 512 + mbr.partitions[0].offset_lba).into();
+    f.seek(SeekFrom::Start(disk_size - 1))?;
+    let b = [0u8; 1];
+    f.write(&b)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -2584,17 +2599,12 @@ mod test {
         let pt = PartitionTable::new(sz);
         let mbr = MasterBootRecord::new(&pt);
         let mut f = OpenOptions::new().write(true).create(true).open(FN)?;
-        let bytes: [u8; 512] = unsafe { mem::transmute(mbr) };
-        f.write_all(&bytes)?;
-        // Write a single byte at offset `sz - 1`. Depending on the
-        // underlying file system, the file should now have the
-        // desired size and hopefully be sparse.
-        f.seek(SeekFrom::Start((sz - 1) as u64))?;
-        let b = [0u8; 1];
-        f.write(&b)?;
+
+        format_disk(&mut f, &mbr);
         f.sync_all()?;
 
-        let out = Command::new("hdiutil").args(["attach", "-imagekey", "diskimage-class=CRawDiskImage", "-nomount", FN]).output().unwrap();
+        let args = ["attach", "-imagekey", "diskimage-class=CRawDiskImage", "-nomount", FN];
+        let out = Command::new("hdiutil").args(args).output().unwrap();
 
         let s = std::str::from_utf8(&out.stdout).unwrap();
         let words: Vec<&str> = s.split(char::is_whitespace).collect();
