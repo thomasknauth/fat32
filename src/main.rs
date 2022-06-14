@@ -111,7 +111,6 @@ impl PartitionTable {
 // 0x042	0x37	BYTE	Extended boot signature (0x28)
 // 0x043	0x38	DWORD	Volume serial number
 
-// size: 36 bytes
 // Stored in first sector of a FAT volume.
 #[derive(Debug,Copy,Clone)]
 #[repr(C)]
@@ -132,6 +131,8 @@ struct BIOSParameterBlock {
     hidden_sectors: u32,
     total_secs_32: u32
 }
+
+const _: [u8; 36] = [0; std::mem::size_of::<BIOSParameterBlock>()];
 
 #[derive(Debug,Copy,Clone)]
 #[repr(C)]
