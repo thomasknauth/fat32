@@ -69,6 +69,7 @@ struct PartitionTable { // Offset in bytes
 const PART_TYPE_FAT32_WITH_LBA_ADDRESSING: u8 = 11;
 
 impl PartitionTable {
+    /// Construct a new partition table entry covering `sz` bytes.
     fn new(sz: usize) -> PartitionTable {
         let mut x = PartitionTable::default();
         x.start_c = 254;
@@ -162,14 +163,11 @@ struct Fat32 {
     file_sys_type: [u8; 8]
 }
 
-#[derive(Debug,Default,Copy,Clone)]
+#[derive(Debug,Copy,Clone)]
 #[repr(C)]
 #[repr(packed)]
 struct MasterBootRecord {
-    bootstrap_code_1: [u64; 32],
-    bootstrap_code_2: [u32; 32],
-    bootstrap_code_3: [u32; 15],
-    bootstrap_code_4: [u16; 1],      // Skip first 446 bytes. Cannot use bootstrap_code: [u8; 446] for some reason.
+    bootstrap_code: [u8; 446],
     partitions: [PartitionTable; 4],
     sig: [u8; 2]
 }
@@ -178,13 +176,15 @@ struct MasterBootRecord {
 const _: [u8; 512] = [0; std::mem::size_of::<MasterBootRecord>()];
 
 impl MasterBootRecord {
-
     fn new(pt: &PartitionTable) -> MasterBootRecord {
-        let mut x = MasterBootRecord::default();
-        x.partitions[0] = pt.clone();
-        x.sig[0] = 0x55;
-        x.sig[1] = 0xAA;
-        x
+        MasterBootRecord {
+            bootstrap_code: [0; 446],
+            partitions: [pt.clone(),
+                         PartitionTable::default(),
+                         PartitionTable::default(),
+                         PartitionTable::default()],
+            sig: [0x55, 0xAA]
+        }
     }
 }
 
