@@ -246,7 +246,6 @@ impl Index<usize> for Fat {
 struct Fat32Media {
     fname: String,
     f: std::fs::File,
-    mbr: MasterBootRecord,
     bpb: BIOSParameterBlock,
     fat32: Fat32,
     next_free: u32
@@ -1676,7 +1675,7 @@ impl Fat32Media {
         let mut entries: Vec<FatEntry> = vec![];
         for i in 0..self.bpb.fat_copies {
             let offset_within_diskimage =
-                512 * (self.mbr.partitions[0].offset_lba + i as u32 * self.fat32.secs_per_fat_32 + sector ) +
+                512 * (self.bpb.hidden_sectors + i as u32 * self.fat32.secs_per_fat_32 + sector ) +
                 offset_within_sector;
             assert!(self.f.seek(SeekFrom::Start(offset_within_diskimage.into())).is_ok());
             self.f.read_exact(&mut buf).expect("Error reading FAT32 entry.");
@@ -1715,7 +1714,7 @@ impl Fat32Media {
 
         for i in 0..self.bpb.fat_copies {
             let offset_within_diskimage =
-                512 * (self.mbr.partitions[0].offset_lba + i as u32 * self.fat32.secs_per_fat_32 + sector ) +
+                512 * (self.bpb.hidden_sectors + i as u32 * self.fat32.secs_per_fat_32 + sector ) +
                 offset_within_sector;
             self.f.seek(SeekFrom::Start(offset_within_diskimage.into()))?;
             self.f.read_exact(&mut buf)?;
@@ -1921,7 +1920,7 @@ impl Iterator for ClusterItr<'_> {
         }
         let mut data = [0; 512];
         let sector = self.fat.first_sector_of_cluster(self.entry.read()) + self.sector as u32;
-        let file_offset = 512 * self.fat.mbr.partitions[0].offset_lba as u64 + sector as u64 * 512;
+        let file_offset = 512 * self.fat.bpb.hidden_sectors as u64 + sector as u64 * 512;
         assert!(self.fat.f.seek(SeekFrom::Start(file_offset.into())).is_ok());
         self.fat.f.read_exact(&mut data).expect("Error reading sector.");
 
@@ -1987,7 +1986,7 @@ impl<'a> Fat32Media {
 
         assert!(bpb.bytes_per_sec == 512);
 
-        Fat32Media { fname: filename, f: f, mbr: mbr, bpb: bpb, fat32: fat32, next_free: 0 }
+        Fat32Media { fname: filename, f: f, bpb: bpb, fat32: fat32, next_free: 0 }
     }
 
     fn parse_directory(&'a mut self, cluster_id: u32, handler: &mut dyn FileAction) {
@@ -2194,7 +2193,7 @@ impl<'a> Fat32Media {
         //         line!(), sector, cluster);
 
         let file_offset = (self.first_sector_of_cluster(cluster) +
-                           sector as u32 + self.mbr.partitions[0].offset_lba) * 512;
+                           sector as u32 + self.bpb.hidden_sectors) * 512;
         assert!(self.f.seek(SeekFrom::Start(file_offset.into())).is_ok());
 
         let r = self.f.write_all(data);
@@ -2220,7 +2219,7 @@ impl<'a> Fat32Media {
         assert!(sector < self.bpb.sectors_per_cluster);
 
         let file_offset = (self.first_sector_of_cluster(cluster) +
-                           sector as u32 + self.mbr.partitions[0].offset_lba) * 512;
+                           sector as u32 + self.bpb.hidden_sectors) * 512;
         assert!(self.f.seek(SeekFrom::Start(file_offset.into())).is_ok());
 
         let r = self.f.read_exact(data);
@@ -2365,8 +2364,6 @@ fn main() {
 
     env_logger::init();
 
-    assert!(fat.mbr.sig[0] == 0x55);
-    assert!(fat.mbr.sig[1] == 0xAA);
 
     // FAT12/16 size. Must be zero for FAT32.
     assert!(fat.bpb.total_secs_16 == 0);
@@ -2395,7 +2392,6 @@ fn main() {
             }
         },
         SubCommand::Info(_t) => {
-            println!("{:?}", fat.mbr);
             println!("{:?}", fat.bpb);
             println!("{:?}", fat.fat32);
             println!("Volume label: {}", str::from_utf8(&fat.fat32.vol_label).unwrap());
