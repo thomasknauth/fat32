@@ -1704,7 +1704,7 @@ impl Fat32Media {
         return cnt;
     }
 
-    fn write_fat_entry(&mut self, cluster: u32, fat_entry: u32) {
+    fn write_fat_entry(&mut self, cluster: u32, fat_entry: u32) -> io::Result<()> {
 
         // trace!("write_fat_entry {} cluster= {}, fat_entry= {:X}", line!(), cluster, fat_entry);
 
@@ -1717,14 +1717,15 @@ impl Fat32Media {
             let offset_within_diskimage =
                 512 * (self.mbr.partitions[0].offset_lba + i as u32 * self.fat32.secs_per_fat_32 + sector ) +
                 offset_within_sector;
-            assert!(self.f.seek(SeekFrom::Start(offset_within_diskimage.into())).is_ok());
-            self.f.read_exact(&mut buf).expect("Error reading FAT32 entry.");
+            self.f.seek(SeekFrom::Start(offset_within_diskimage.into()))?;
+            self.f.read_exact(&mut buf)?;
 
             let mut existing_entry = FatEntry::new(u32::from_le_bytes(buf));
             existing_entry.update(fat_entry);
-            self.f.seek(SeekFrom::Start(offset_within_diskimage.into())).expect("");
-            self.f.write_all(&existing_entry.val.to_le_bytes()).expect("Error writing FAT32 entry.");
+            self.f.seek(SeekFrom::Start(offset_within_diskimage.into()))?;
+            self.f.write_all(&existing_entry.val.to_le_bytes())?;
         }
+        Ok(())
     }
 
     fn find_free_fat32_entries(&mut self, count: usize) -> Option<Vec<u32>> {
