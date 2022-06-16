@@ -197,6 +197,29 @@ struct Fat32 {
 
 const _: [u8; 54] = [0; std::mem::size_of::<Fat32>()];
 
+/// Determine number of sectors per cluster based on
+/// `disk_size_bytes`.
+///
+/// See p20 of fatgen103.pdf for an explanation.
+fn size_to_sectors_per_cluster(disk_size_bytes: u32) -> u8 {
+
+    const DiskTblFat32: [(u32, u8); 6] = [
+        (66600, 0),
+        (532480, 1),
+        (16777216, 8),
+        (33554432, 16),
+        (67108864, 32),
+        (u32::MAX, 64)
+    ];
+
+    for (sz, secs) in DiskTblFat32 {
+        if sz <= disk_size_bytes {
+            return secs;
+        }
+    }
+    unreachable!();
+}
+
 impl Fat32 {
     fn new(bpb: &BIOSParameterBlock) -> Fat32 {
         Fat32 {
