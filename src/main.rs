@@ -134,6 +134,37 @@ struct BIOSParameterBlock {
 
 const _: [u8; 36] = [0; std::mem::size_of::<BIOSParameterBlock>()];
 
+impl BIOSParameterBlock {
+    fn new(p: &PartitionTable) -> BIOSParameterBlock {
+        BIOSParameterBlock {
+            jmp: [0xEB, 0x00, 0x90],
+            oem_name: [0; 8],
+            bytes_per_sec: 512,
+            sectors_per_cluster: 4,
+            reserved_sectors: 32,
+            fat_copies: 1, // Who needs redundancy? No risk, no fun.
+            root_dir_entries: 0,
+            total_secs_16: 0,
+            media_type: 0xF8,
+            secs_per_fat_16: 0,
+            sectors_per_track: 0,
+            number_of_heads: 0,
+            hidden_sectors: p.offset_lba,
+            total_secs_32: p.size_sectors
+        }
+    }
+
+    /// Calculate size (in sectors) of a single FAT32 data structure. Base
+    /// on (adapted for FAT32 only) formula from p21 of fatgen103.pdf.
+    fn fat32_size(&self) -> u32 {
+
+        let tmpval1: u32 = self.total_secs_32 - (self.reserved_sectors as u32);
+        let tmpval2: u32 = ((256 * (self.sectors_per_cluster as u32)) + (self.fat_copies as u32)) / 2;
+
+        (tmpval1 + (tmpval2 - 1)) / tmpval2
+    }
+}
+
 #[derive(Debug,Copy,Clone)]
 #[repr(C)]
 struct Fat12and16Block {
@@ -163,6 +194,58 @@ struct Fat32 {
     vol_label: [u8; 11],
     file_sys_type: [u8; 8]
 }
+
+const _: [u8; 54] = [0; std::mem::size_of::<Fat32>()];
+
+impl Fat32 {
+    fn new(bpb: &BIOSParameterBlock) -> Fat32 {
+        Fat32 {
+            secs_per_fat_32: bpb.fat32_size(),
+            ext_flags: 0,
+            fs_ver: 0,
+            root_cluster: 2,
+            fs_info: 1,
+            backup_boot_sector: 0,
+            reserved: [0; 12],
+            drive_nr: 0x80,
+            reserved1: 0,
+            boot_sig: 0x29,
+            vol_id: 0xDEADBEEF,
+            vol_label: "MYRUSTYLOVE".as_bytes().try_into().unwrap(),
+            file_sys_type: "FAT32   ".as_bytes().try_into().unwrap()
+        }
+    }
+}
+
+#[derive(Debug,Copy,Clone)]
+#[repr(C)]
+#[repr(packed)]
+struct FsInfo {
+    head_sig: [u8; 4],
+    reserved_1: [u8; 480],
+    struct_sig: [u8; 4],
+    free_count: u32,
+    next_free: u32,
+    reserved_2: [u8; 12],
+    tail_sig: [u8; 4]
+}
+
+impl FsInfo {
+    fn default() -> FsInfo {
+        FsInfo {
+            head_sig: [0x52, 0x52, 0x61, 0x41],
+            reserved_1: [0; 480],
+            struct_sig: [0x72, 0x72, 0x41, 0x61],
+            free_count: 0xFFFFFFFF,
+            next_free: 0xFFFFFFFF,
+            reserved_2: [0; 12],
+            tail_sig: [0x00, 0x00, 0x55, 0xAA]
+        }
+    }
+}
+
+// Compile-time assert for the size of struct.
+const _: [u8; 512] = [0; std::mem::size_of::<FsInfo>()];
 
 #[derive(Debug,Copy,Clone)]
 #[repr(C)]
