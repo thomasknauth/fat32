@@ -56,6 +56,12 @@ test.img:
 	python3 ./fsck.py /Volumes/NAME
 	hdiutil detach /Volumes/NAME
 
+$(PREFIX)/two-partitions.img:
+	dd if=/dev/zero of=$@ bs=1m count=256 conv=sparse
+	DEV=`hdiutil attach -imagekey diskimage-class=CRawDiskImage -nomount $@` && \
+	diskutil partitionDisk $$DEV MBR FAT32 PART1 128M FAT32 PART2 128M && \
+	hdiutil detach $$DEV
+
 $(PREFIX)/empty.img: $(PREFIX)/empty-128.img
 	mv $^ $@
 
