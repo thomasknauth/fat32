@@ -1478,10 +1478,8 @@ impl Fat32Media {
     fn clear_cluster(&mut self, cluster: u32) {
         trace!("fn clear_cluster() {} cluster= {}", line!(), cluster);
 
-        let zeroes = [0u8; 512];
-        for i in 0..self.bpb.sectors_per_cluster {
-            self.write_sector_of_cluster(i, cluster, &zeroes);
-        }
+        let zeroes = vec![0u8; self.bytes_per_cluster().try_into().unwrap()];
+        self.write_cluster(cluster, zeroes.as_slice());
     }
 
     /// @param cluster: any cluster in a chain
@@ -1640,35 +1638,32 @@ impl Fat32Media {
             dst_entry.e.file_size = src_meta.len().try_into().unwrap();
 
             // copy content from host to FAT
-            let mut left: u64 = src_meta.len();
+            let mut left = src_meta.len();
             let mut src_f = std::fs::File::open(src_path).expect("");
             let mut src_reader = io::BufReader::new(src_f);
+
+            let mut buf: Vec<u8> = vec![0; self.bytes_per_cluster().try_into().unwrap()];
+
             for cluster in &clusters {
                 assert!(left > 0);
-                for sector in 0..self.bpb.sectors_per_cluster {
-                    let mut buf: [u8; 512] = [0u8; 512];
 
-                    // trace!("fn cp(), {}, left= {}", line!(), left);
+                // trace!("fn cp(), {}, left= {}", line!(), left);
 
-                    if left >= 512 {
-                        src_reader.read_exact(&mut buf).expect("");
-                    } else {
-                        let mut x = Vec::new();
-                        src_reader.read_to_end(&mut x).expect("");
-                        assert!(x.len() == left.try_into().unwrap());
-                        for (i, b) in x.iter().enumerate() {
-                            buf[i] = *b;
-                        }
-                    }
-
-                    self.write_sector_of_cluster(sector, *cluster, &buf);
-
-                    if left <= 512 {
-                        left = 0;
-                        break;
-                    }
-                    left -= 512;
+                if left >= u64::from(self.bytes_per_cluster()) {
+                    src_reader.read_exact(&mut buf.as_mut_slice()).expect("");
+                } else {
+                    buf.clear();
+                    src_reader.read_to_end(&mut buf).expect("");
+                    assert!(buf.len() == left.try_into().unwrap());
                 }
+
+                self.write_cluster(*cluster, &buf);
+
+                if left <= self.bytes_per_cluster() {
+                    left = 0;
+                    break;
+                }
+                left -= self.bytes_per_cluster();
             }
 
             // Link clusters into a chain.
@@ -1769,7 +1764,7 @@ impl Fat32Media {
         data[0..32].copy_from_slice(&dot_entry.to_bytes());
         data[32..64].copy_from_slice(&dotdot_entry.to_bytes());
 
-        self.write_sector_of_cluster(0, dir_cluster, &data);
+        self.write_cluster(dir_cluster, &data);
 
         let mut entry = HybridEntry::new(&file_name);
         entry.e.set_cluster_number(dir_cluster);
