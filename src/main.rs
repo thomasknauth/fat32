@@ -354,7 +354,7 @@ struct Fat32Media {
     f: std::fs::File,
     bpb: BIOSParameterBlock,
     fat32: Fat32,
-    next_free: u32
+    fsinfo: FsInfo
 }
 
 const ATTR_READ_ONLY:u8 = 0x1;
@@ -1838,12 +1838,12 @@ impl Fat32Media {
         let sector_size: u32 = 512;
         let max_cluster_id = sector_size * self.fat32.secs_per_fat_32 / fat_entry_size;
         let mut entries: Vec<u32> = vec![];
-        for i in self.next_free..max_cluster_id {
+        for i in self.fsinfo.next_free..max_cluster_id {
             let entry = self.cluster_number_to_fat32_entry(i);
             if entry.is_empty() {
                 entries.push(i);
                 if entries.len() == count {
-                    self.next_free = i;
+                    self.fsinfo.next_free = i;
                     return Some(entries);
                 }
             }
@@ -2090,9 +2090,16 @@ impl<'a> Fat32Media {
             unsafe { mem::transmute(fat32_data) }
         };
 
+        let fsinfo: FsInfo = {
+            let mut bytes = [0; 512];
+            f.seek(SeekFrom::Start(((512 * (mbr.partitions[0].offset_lba + (fat32.fs_info as u32)))) as u64)).is_ok();
+            f.read_exact(&mut bytes).unwrap();
+            unsafe { mem::transmute(bytes) }
+        };
+
         assert!(bpb.bytes_per_sec == 512);
 
-        Fat32Media { fname: filename, f: f, bpb: bpb, fat32: fat32, next_free: 0 }
+        Fat32Media { fname: filename, f: f, bpb: bpb, fat32: fat32, fsinfo: fsinfo }
     }
 
     fn parse_directory(&'a mut self, cluster_id: u32, handler: &mut dyn FileAction) {
