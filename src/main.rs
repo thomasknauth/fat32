@@ -1572,6 +1572,10 @@ impl Fat32Media {
         return Errno::SUCCESS;
     }
 
+    fn bytes_per_cluster(&self) -> u64 {
+        u64::from(u16::from(self.bpb.sectors_per_cluster) * self.bpb.bytes_per_sec)
+    }
+
     /// For now, `src` must refer to a file on the host and `dst` to a
     /// file on the FAT.
     fn cp(&mut self, src: &str, dst: &str) -> Errno {
@@ -2393,6 +2397,18 @@ impl<'a> Fat32Media {
         assert!(r.is_ok());
         // r = self.f.sync_all();
         // assert!(r.is_ok());
+    }
+
+    /// Write an entire cluster of data as one operation.
+    ///
+    /// Should be faster than repeatedly calling
+    /// `Fat32Media::write_sector_of_cluster()`
+    fn write_cluster(&mut self, cluster: u32, data: &[u8]) -> io::Result<()> {
+        assert!(data.len() <= self.bytes_per_cluster().try_into().unwrap());
+        let offset = (self.first_sector_of_cluster(cluster) +
+                      self.bpb.hidden_sectors) * u32::from(self.bpb.bytes_per_sec);
+        self.f.seek(SeekFrom::Start(offset.into()))?;
+        self.f.write_all(data)
     }
 
     /// @param sector Sector number within the chain pointed to by `cluster`.
