@@ -1820,6 +1820,49 @@ impl Fat32Media {
         return cnt;
     }
 
+    /// Initialize a volume with FAT32.
+    fn init_fat(&mut self) -> io::Result<()> {
+        assert!(self.fat32.secs_per_fat_32 > 0);
+
+        {
+            self.f.seek(SeekFrom::Start((self.bpb.hidden_sectors * 512).into()))?;
+            let bytes: [u8; std::mem::size_of::<BIOSParameterBlock>()] = unsafe { mem::transmute(self.bpb) };
+            self.f.write_all(&bytes)?;
+        }
+
+        {
+            let bytes: [u8; std::mem::size_of::<Fat32>()] = unsafe { mem::transmute(self.fat32) };
+            self.f.write_all(&bytes)?;
+        }
+
+        {
+            let offset = 512 * (self.bpb.hidden_sectors + u32::from(self.fat32.fs_info));
+            self.f.seek(SeekFrom::Start(offset.into()))?;
+            let bytes: [u8; std::mem::size_of::<FsInfo>()] = unsafe { mem::transmute(self.fsinfo) };
+            self.f.write_all(&bytes)?;
+        }
+
+        let buf = vec![0; usize::from(self.bpb.bytes_per_sec)];
+
+        for nr_copy in 0..self.bpb.fat_copies {
+            let offset = u32::from(self.bpb.bytes_per_sec) * (self.bpb.hidden_sectors +
+                                                              u32::from(self.bpb.reserved_sectors) +
+                                                              u32::from(nr_copy) * self.fat32.secs_per_fat_32);
+            self.f.seek(SeekFrom::Start(u64::from(offset)))?;
+
+            for sector in 0 .. self.fat32.secs_per_fat_32 {
+                self.f.write_all(buf.as_slice())?;
+            }
+        }
+
+        self.write_fat_entry(0, 0x0FFFFF00 | u32::from(self.bpb.media_type))?;
+        self.write_fat_entry(1, FAT_END_OF_CHAIN)?;
+        self.write_fat_entry(self.fat32.root_cluster, FAT_END_OF_CHAIN)?;
+        self.clear_cluster(self.fat32.root_cluster);
+
+        Ok(())
+    }
+
     fn write_fat_entry(&mut self, cluster: u32, fat_entry: u32) -> io::Result<()> {
 
         // trace!("write_fat_entry {} cluster= {}, fat_entry= {:X}", line!(), cluster, fat_entry);
@@ -2121,6 +2164,22 @@ impl<'a> Fat32Media {
         assert!(bpb.bytes_per_sec == 512);
 
         Fat32Media { f: f, bpb: bpb, fat32: fat32, fsinfo: fsinfo }
+    }
+
+    /// Create a new volume/partition formatted with FAT32.
+    fn new_volume(f: &mut std::fs::File, mbr: &MasterBootRecord) -> io::Result<Fat32Media> {
+
+        let bpb = BIOSParameterBlock::new(&mbr.partitions[0]);
+        let fat = Fat32::new(&bpb);
+        let mut fsinfo = FsInfo::default();
+        // - 1 for the root directory/cluster.
+        fsinfo.free_count = count_of_clusters(&bpb, &fat) - 1;
+        fsinfo.next_free = 3;
+
+        let mut fatmedia = Fat32Media { f: f.try_clone().unwrap(), bpb: bpb, fat32: fat, fsinfo: fsinfo };
+        fatmedia.init_fat()?;
+
+        Ok(fatmedia)
     }
 
     fn parse_directory(&'a mut self, cluster_id: u32, handler: &mut dyn FileAction) {
