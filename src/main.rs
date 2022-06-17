@@ -2789,4 +2789,30 @@ mod test {
         std::fs::remove_file(FN)?;
         Ok(())
     }
+
+    #[test]
+    fn test_format_fat32() -> std::io::Result<()> {
+
+        const FN: &str = "/Volumes/RAMDisk/e";
+        let mut f = OpenOptions::new().read(true).write(true).create(true).open(FN)?;
+        let sz: usize = 128 * 1024 * 1024;
+        let mbr = MasterBootRecord::new_disk(&mut f, sz)?;
+        let fatvol = Fat32Media::new_volume(&mut f, &mbr)?;
+
+        let out = Command::new("hdiutil").args(["attach", "-imagekey", "diskimage-class=CRawDiskImage", "-nomount", FN]).output().unwrap();
+
+        let s = std::str::from_utf8(&out.stdout).unwrap();
+        let words: Vec<&str> = s.split(char::is_whitespace).collect();
+        // First word of `hdiutil` output should be path of the newly
+        // created device.
+        let device = words[0];
+        let volume = words[0].to_owned() + "s1";
+
+        io::stdout().write_all(&Command::new("diskutil").args(["verifyVolume", &volume]).output().unwrap().stdout)?;
+
+        let status = Command::new("hdiutil").args(["eject", device]).status().unwrap();
+        assert!(status.success());
+        std::fs::remove_file(FN)?;
+        Ok(())
+    }
 }
