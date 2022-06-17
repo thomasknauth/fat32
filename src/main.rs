@@ -140,7 +140,7 @@ impl BIOSParameterBlock {
             jmp: [0xEB, 0x00, 0x90],
             oem_name: [0; 8],
             bytes_per_sec: 512,
-            sectors_per_cluster: 4,
+            sectors_per_cluster: size_to_sectors_per_cluster(p.size_sectors),
             reserved_sectors: 32,
             fat_copies: 1, // Who needs redundancy? No risk, no fun.
             root_dir_entries: 0,
@@ -201,9 +201,9 @@ const _: [u8; 54] = [0; std::mem::size_of::<Fat32>()];
 /// `disk_size_bytes`.
 ///
 /// See p20 of fatgen103.pdf for an explanation.
-fn size_to_sectors_per_cluster(disk_size_bytes: u32) -> u8 {
+fn size_to_sectors_per_cluster(sectors: u32) -> u8 {
 
-    const DiskTblFat32: [(u32, u8); 6] = [
+    const DISK_TABLE_FAT32: [(u32, u8); 6] = [
         (66600, 0),
         (532480, 1),
         (16777216, 8),
@@ -212,9 +212,9 @@ fn size_to_sectors_per_cluster(disk_size_bytes: u32) -> u8 {
         (u32::MAX, 64)
     ];
 
-    for (sz, secs) in DiskTblFat32 {
-        if sz <= disk_size_bytes {
-            return secs;
+    for (disk_size_in_sectors, sectors_per_cluster) in DISK_TABLE_FAT32 {
+        if sectors <= disk_size_in_sectors {
+            return sectors_per_cluster;
         }
     }
     unreachable!();
