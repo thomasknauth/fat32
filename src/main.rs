@@ -112,7 +112,7 @@ impl PartitionTable {
 // 0x043	0x38	DWORD	Volume serial number
 
 // Stored in first sector of a FAT volume.
-#[derive(Debug,Copy,Clone)]
+#[derive(Debug,Copy,Clone,PartialEq)]
 #[repr(C)]
 #[repr(packed)]
 struct BIOSParameterBlock {
@@ -2107,6 +2107,16 @@ impl<'a> Fat32Media {
             f.read_exact(&mut bytes).unwrap();
             unsafe { mem::transmute(bytes) }
         };
+
+        if fat32.backup_boot_sector > 0 {
+            let offset: u64 = (512 * (mbr.partitions[0].offset_lba + (fat32.backup_boot_sector as u32))).into();
+            let mut bytes = [0; 36];
+            f.seek(SeekFrom::Start(offset)).is_ok();
+            f.read_exact(&mut bytes).unwrap();
+            let backup: BIOSParameterBlock = unsafe { mem::transmute(bytes) };
+
+            assert_eq!(backup, bpb);
+        }
 
         assert!(bpb.bytes_per_sec == 512);
 
