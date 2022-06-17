@@ -293,6 +293,18 @@ impl MasterBootRecord {
             sig: [0x55, 0xAA]
         }
     }
+
+    /// Create a new disk with a master boot record and a single partition.
+    fn new_disk(f: &mut std::fs::File, size_byte: usize) -> io::Result<MasterBootRecord> {
+        let pt = PartitionTable::new(size_byte);
+        let mbr = MasterBootRecord::new(&pt);
+
+        let bytes: [u8; 512] = unsafe { mem::transmute(mbr) };
+        f.seek(SeekFrom::Start(0))?;
+        f.write_all(&bytes)?;
+
+        Ok(mbr)
+    }
 }
 
 /// Size of a DirEntry in bytes.
@@ -2541,21 +2553,6 @@ fn main() {
     }
 }
 
-fn format_disk<T: Seek + Write>(f: &mut T, mbr: &MasterBootRecord) -> io::Result<()> {
-    let bytes: [u8; 512] = unsafe { mem::transmute(*mbr) };
-    f.seek(SeekFrom::Start(0))?;
-    f.write_all(&bytes)?;
-    // Write a single byte at the end of the disk. If `f` points to a
-    // file on a regular file system (as opposed to an actual device),
-    // the file should now have the desired size and hopefully be
-    // sparse.
-    let disk_size: u64 = (mbr.partitions[0].size_sectors * 512 + mbr.partitions[0].offset_lba).into();
-    f.seek(SeekFrom::Start(disk_size - 1))?;
-    let b = [0u8; 1];
-    f.write(&b)?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
@@ -2704,12 +2701,9 @@ mod test {
     /// available disk space.
     fn test_format_disk() -> std::io::Result<()> {
         const FN: &str = "/Volumes/RAMDisk/d";
-        let sz: usize = 128 * 1024 * 1024;
-        let pt = PartitionTable::new(sz);
-        let mbr = MasterBootRecord::new(&pt);
+        let size_byte: usize = 128 * 1024 * 1024;
         let mut f = OpenOptions::new().write(true).create(true).open(FN)?;
-
-        format_disk(&mut f, &mbr);
+        let mbr = MasterBootRecord::new_disk(&mut f, size_byte);
         f.sync_all()?;
 
         let args = ["attach", "-imagekey", "diskimage-class=CRawDiskImage", "-nomount", FN];
