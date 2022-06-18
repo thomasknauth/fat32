@@ -2117,8 +2117,8 @@ impl Iterator for FileItr<'_> {
 // directory entry.
 impl<'a> Fat32Media {
 
-    // `filename` of disk image
-    fn new(filename: String) -> Fat32Media {
+    // Open an existing disk image at location `filename`.
+    fn open(filename: String) -> Fat32Media {
         let mut f = OpenOptions::new()
             .read(true)
             .write(true)
@@ -2564,7 +2564,7 @@ extern crate env_logger;
 // http://stackoverflow.com/questions/31192956/whats-the-de-facto-way-of-reading-and-writing-files-in-rust-1-x
 fn main() {
     let opts: Opts = Opts::parse();
-    let mut fat = Fat32Media::new(opts.diskimage);
+    let mut fat = Fat32Media::open(opts.diskimage);
 
     env_logger::init();
 
@@ -2649,7 +2649,7 @@ mod test {
 
     #[test]
     fn test_ls_01() {
-        let mut fat = Fat32Media::new("/Volumes/RAMDisk/testcase_01.img".to_string());
+        let mut fat = Fat32Media::open("/Volumes/RAMDisk/testcase_01.img".to_string());
         let entries = ls(&mut fat, &"/".to_string()).unwrap();
         let x = entries.iter().map(|x| x.e.short_name_as_str()).collect::<Vec<String>>();
 
@@ -2675,7 +2675,7 @@ mod test {
 
     #[test]
     fn test_find_free_fat32_entry() {
-        let mut fat = Fat32Media::new("/Volumes/RAMDisk/testcase_01.img".to_string());
+        let mut fat = Fat32Media::open("/Volumes/RAMDisk/testcase_01.img".to_string());
         println!("{:?} ", fat.find_free_fat32_entries(10));
         println!("FAT[0]= {:X?} ", fat.cluster_number_to_fat32_entry(0));
         println!("FAT[1]= {:X?} ", fat.cluster_number_to_fat32_entry(1));
@@ -2690,7 +2690,7 @@ mod test {
 
     #[test]
     fn test_touch() {
-        let mut fat = Fat32Media::new("/Volumes/RAMDisk/testcase_02.img".to_string());
+        let mut fat = Fat32Media::open("/Volumes/RAMDisk/testcase_02.img".to_string());
         assert_eq!(fat.touch(&"/0/1".to_string()).unwrap_err(), Errno::ENOENT);
         // On OSX, the newly formatted volume can hold 13 additional
         // entries in its root directory before we need to allocate a
@@ -2709,7 +2709,7 @@ mod test {
     /// Test writing files into FAT by copying files from the host to the image.
     fn test_cp() {
         // TODO Create new empty image before each run (instead of relying on existing files).
-        let mut fat = Fat32Media::new("/Volumes/RAMDisk/testcase_03.img".to_string());
+        let mut fat = Fat32Media::open("/Volumes/RAMDisk/testcase_03.img".to_string());
         for i in 0..16 {
             fat.cp("host:///Users/thomas/rust/fat32/src/main.rs", &format!("/{}", i));
         }
@@ -2753,7 +2753,7 @@ mod test {
 
     #[test]
     fn test_from_to_bytes() {
-        let mut fat = Fat32Media::new("/Volumes/RAMDisk/testcase_01.img".to_string());
+        let mut fat = Fat32Media::open("/Volumes/RAMDisk/testcase_01.img".to_string());
         let entry = fat.get_entry("/1/66EC94BA").unwrap();
         let bytes = entry.e.to_bytes();
         assert_eq!(DirEntry::from_bytes_short(&bytes).unwrap(), entry.e);
@@ -2761,7 +2761,7 @@ mod test {
 
     #[test]
     fn test_mkdir() {
-        let mut fat = Fat32Media::new("/Volumes/RAMDisk/testcase_01.img".to_string());
+        let mut _fat = Fat32Media::open("/Volumes/RAMDisk/testcase_01.img".to_string());
     }
 
     use is_valid_short_name;
