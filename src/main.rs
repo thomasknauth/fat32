@@ -49,6 +49,7 @@
 // to keep my implementation of mapping long names to short names
 // simple.
 
+#![allow(dead_code)]
 
 #[derive(Debug,Default,Copy,Clone)]
 #[repr(C)]
@@ -450,7 +451,6 @@ impl LongEntry {
 
     fn to_bytes(&self) -> [u8; 32] {
         let mut x: [u8; DIR_ENTRY_SIZE] = [0u8; DIR_ENTRY_SIZE];
-        let off: usize = 0;
         x[0] = self.ord;
         for i in 0..5 {
             let y = self.name1[i].to_le_bytes();
@@ -467,7 +467,7 @@ impl LongEntry {
         x[27] = self.unused[1];
         x[28..30].copy_from_slice(&self.name3[0].to_le_bytes());
         x[30..32].copy_from_slice(&self.name3[1].to_le_bytes());
-        return x;
+        x
     }
 
     fn name(&self) -> [u16;13] {
@@ -846,7 +846,8 @@ impl HybridEntry {
             s.push_str("/");
         }
         if self.e.is_file() {
-            s.push_str(&format!(" size {} byte(s)", self.e.file_size));
+            let file_size = self.e.file_size;
+            s.push_str(&format!(" size {} byte(s)", file_size));
         }
         s.push_str("\n");
         return s;
@@ -1111,7 +1112,7 @@ fn ls(fs: &mut Fat32Media, path: &str) -> Result<Vec<HybridEntry>, Errno> {
     }
 
     let mut v = Vec::new();
-    for (range, entry) in fs.dir_entry_iter(e.e.cluster_number()) {
+    for (_, entry) in fs.dir_entry_iter(e.e.cluster_number()) {
         if entry.e.is_free() {
             continue;
         }
@@ -1479,7 +1480,7 @@ impl Fat32Media {
         trace!("fn clear_cluster() {} cluster= {}", line!(), cluster);
 
         let zeroes = vec![0u8; self.bytes_per_cluster().try_into().unwrap()];
-        self.write_cluster(cluster, zeroes.as_slice());
+        self.write_cluster(cluster, zeroes.as_slice()).unwrap();
     }
 
     /// @param cluster: any cluster in a chain
@@ -1500,11 +1501,11 @@ impl Fat32Media {
         assert!(fat_entry.is_end_of_chain());
 
         for x in free_fat_entries {
-            self.write_fat_entry(prev, *x);
+            self.write_fat_entry(prev, *x).unwrap();
             prev = *x;
         }
 
-        self.write_fat_entry(prev, FAT_END_OF_CHAIN);
+        self.write_fat_entry(prev, FAT_END_OF_CHAIN).unwrap();
     }
 
     // Only delete empty files for now. Cannot unlink/free FAT entries/clusters yet.
@@ -1639,7 +1640,7 @@ impl Fat32Media {
 
             // copy content from host to FAT
             let mut left = src_meta.len();
-            let mut src_f = std::fs::File::open(src_path).expect("");
+            let src_f = std::fs::File::open(src_path).expect("");
             let mut src_reader = io::BufReader::new(src_f);
 
             let mut buf: Vec<u8> = vec![0; self.bytes_per_cluster().try_into().unwrap()];
@@ -1657,22 +1658,22 @@ impl Fat32Media {
                     assert!(buf.len() == left.try_into().unwrap());
                 }
 
-                self.write_cluster(*cluster, &buf);
+                self.write_cluster(*cluster, &buf).unwrap();
 
-                if left <= self.bytes_per_cluster() {
-                    left = 0;
-                    break;
-                }
+                // if left <= self.bytes_per_cluster() {
+                //     left = 0;
+                //     break;
+                // }
                 left -= self.bytes_per_cluster();
             }
 
             // Link clusters into a chain.
             let mut prev_cluster = dst_entry.e.cluster_number();
             for cluster in &clusters[1..] {
-                self.write_fat_entry(prev_cluster, *cluster);
+                self.write_fat_entry(prev_cluster, *cluster).unwrap();
                 prev_cluster = *cluster;
             }
-            self.write_fat_entry(prev_cluster, FAT_END_OF_CHAIN);
+            self.write_fat_entry(prev_cluster, FAT_END_OF_CHAIN).unwrap();
         }
 
         match self.add_dir_entry(parent_cluster, &dst_entry) {
@@ -1736,7 +1737,7 @@ impl Fat32Media {
             None => return Err(Errno::ENOSPC),
         };
         self.clear_cluster(dir_cluster);
-        self.write_fat_entry(dir_cluster, FAT_END_OF_CHAIN);
+        self.write_fat_entry(dir_cluster, FAT_END_OF_CHAIN).unwrap();
 
         let mut data = [0u8; 512];
         let mut dot_entry = DirEntry::dot_entry();
@@ -1764,7 +1765,7 @@ impl Fat32Media {
         data[0..32].copy_from_slice(&dot_entry.to_bytes());
         data[32..64].copy_from_slice(&dotdot_entry.to_bytes());
 
-        self.write_cluster(dir_cluster, &data);
+        self.write_cluster(dir_cluster, &data).unwrap();
 
         let mut entry = HybridEntry::new(&file_name);
         entry.e.set_cluster_number(dir_cluster);
@@ -1774,7 +1775,7 @@ impl Fat32Media {
 
             Errno::SUCCESS => return Ok(entry),
             _ => {
-                self.write_fat_entry(dir_cluster, FAT_CLUSTER_FREE);
+                self.write_fat_entry(dir_cluster, FAT_CLUSTER_FREE).unwrap();
                 return Err(Errno::ENOSPC);
             },
         }
@@ -1849,7 +1850,7 @@ impl Fat32Media {
                                                               u32::from(nr_copy) * self.fat32.secs_per_fat_32);
             self.f.seek(SeekFrom::Start(u64::from(offset)))?;
 
-            for sector in 0 .. self.fat32.secs_per_fat_32 {
+            for _ in 0 .. self.fat32.secs_per_fat_32 {
                 self.f.write_all(buf.as_slice())?;
             }
         }
@@ -1918,7 +1919,7 @@ impl Fat32Media {
     /// index of the DirEntry. Use index to write a new DirEntry in a
     /// directory with Fat32Media::write_dir_entry(cluster, idx, DirEntry).
     pub fn dir_entry_iter(&mut self, cluster: u32) -> DirEntryItr {
-        let mut cluster_itr = self.cluster_iter(FatEntry::new(cluster));
+        let cluster_itr = self.cluster_iter(FatEntry::new(cluster));
         // let data = cluster_itr.next().unwrap();
         DirEntryItr { cluster_itr: cluster_itr,
                       data: [0u8; 512],
@@ -1967,7 +1968,7 @@ impl Fat32Media {
         // you the long name anyway (and you do not care what the
         // short name is)..
         if entry.long_name.len() > 0 {
-            let mut rng = rand::thread_rng();
+            let rng = rand::thread_rng();
             let s: String = rng.sample_iter(&Alphanumeric).take(11).collect::<String>().to_ascii_uppercase();
             new_entry.e.name.copy_from_slice(s.as_bytes());
         }
@@ -2038,7 +2039,7 @@ impl Fat32Media {
         let mut data = [0u8; 512];
         let entries_per_sector = data.len() / core::mem::size_of::<DirEntry>();
         let idx_within_sector: usize = idx % entries_per_sector;
-        let mut sector: u8 = (idx / entries_per_sector).try_into().unwrap();
+        let sector: u8 = (idx / entries_per_sector).try_into().unwrap();
         let entries_to_write = bytes.len() / DIR_ENTRY_SIZE;
 
         // If the entry spans a sector/cluster boundary, two sectors
@@ -2145,7 +2146,7 @@ impl<'a> Fat32Media {
 
         let fsinfo: FsInfo = {
             let mut bytes = [0; 512];
-            f.seek(SeekFrom::Start(((512 * (mbr.partitions[0].offset_lba + (fat32.fs_info as u32)))) as u64)).is_ok();
+            f.seek(SeekFrom::Start(((512 * (mbr.partitions[0].offset_lba + (fat32.fs_info as u32)))) as u64)).unwrap();
             f.read_exact(&mut bytes).unwrap();
             unsafe { mem::transmute(bytes) }
         };
@@ -2153,7 +2154,7 @@ impl<'a> Fat32Media {
         if fat32.backup_boot_sector > 0 {
             let offset: u64 = (512 * (mbr.partitions[0].offset_lba + (fat32.backup_boot_sector as u32))).into();
             let mut bytes = [0; 36];
-            f.seek(SeekFrom::Start(offset)).is_ok();
+            f.seek(SeekFrom::Start(offset)).unwrap();
             f.read_exact(&mut bytes).unwrap();
             let backup: BIOSParameterBlock = unsafe { mem::transmute(bytes) };
 
@@ -2559,7 +2560,6 @@ fn repl(fat: &mut Fat32Media) {
 }
 
 extern crate env_logger;
-use env_logger::*;
 
 // http://stackoverflow.com/questions/31192956/whats-the-de-facto-way-of-reading-and-writing-files-in-rust-1-x
 fn main() {
@@ -2639,7 +2639,6 @@ mod test {
     use super::Fat32Media;
     use Errno;
     use ls;
-    use Errno::ENOENT;
 
     // Call this at beginning of each test to capture log output
     // during the test. By default no log output is captured during
@@ -2652,7 +2651,7 @@ mod test {
     fn test_ls_01() {
         let mut fat = Fat32Media::new("/Volumes/RAMDisk/testcase_01.img".to_string());
         let entries = ls(&mut fat, &"/".to_string()).unwrap();
-        let mut x = entries.iter().map(|x| x.e.short_name_as_str()).collect::<Vec<String>>();
+        let x = entries.iter().map(|x| x.e.short_name_as_str()).collect::<Vec<String>>();
 
         assert_eq!(x, (0..10).map(|x| x.to_string()).collect::<Vec<String>>());
         for e in entries {
