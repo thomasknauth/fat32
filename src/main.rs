@@ -304,6 +304,9 @@ impl MasterBootRecord {
         f.seek(SeekFrom::Start(0))?;
         f.write_all(&bytes)?;
 
+        f.seek(SeekFrom::Start((size_byte-1).try_into().unwrap()))?;
+        f.write_all(&[0; 1])?;
+
         Ok(mbr)
     }
 }
