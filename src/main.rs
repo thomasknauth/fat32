@@ -959,7 +959,7 @@ fn gen_short_name(long_name: &str, existing: &Vec<String>) -> Option<[u8;11]> {
     return Some(basis);
 }
 
-use std::convert::TryInto;
+use std::convert::{TryInto,TryFrom};
 use std::fs::OpenOptions;
 use std::io::prelude::*;
 use std::io::SeekFrom;
@@ -1663,11 +1663,7 @@ impl Fat32Media {
 
                 self.write_cluster(*cluster, &buf).unwrap();
 
-                // if left <= self.bytes_per_cluster() {
-                //     left = 0;
-                //     break;
-                // }
-                left -= self.bytes_per_cluster();
+                left = left - u64::try_from(buf.len()).unwrap();
             }
 
             // Link clusters into a chain.
