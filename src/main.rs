@@ -2116,6 +2116,16 @@ impl Iterator for FileItr<'_> {
 // directory entry.
 impl<'a> Fat32Media {
 
+    /// Create a new disk image at location `filename`.
+    ///
+    /// The disk has a master boot record with a single FAT32
+    /// partition.
+    fn new(filename: &str, size_byte: usize) -> io::Result<Fat32Media> {
+        let mut f = OpenOptions::new().read(true).write(true).create(true).open(filename)?;
+        let mbr = MasterBootRecord::new_disk(&mut f, size_byte)?;
+        Fat32Media::new_volume(&mut f, &mbr)
+    }
+
     // Open an existing disk image at location `filename`.
     fn open(filename: String) -> Fat32Media {
         let mut f = OpenOptions::new()
