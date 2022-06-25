@@ -1991,7 +1991,7 @@ impl Fat32Media {
             if e.e.is_free() {
                 consecutive_free_entries += 1;
                 if consecutive_free_entries == num_entries && free_idx == None {
-                    free_idx = Some(range.start - consecutive_free_entries + 1);
+                    free_idx = Some(1 + range.start - consecutive_free_entries);
                 }
             } else {
                 consecutive_free_entries = 0;
