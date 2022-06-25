@@ -2769,7 +2769,13 @@ mod test {
 
     #[test]
     fn test_mkdir() {
-        let mut _fat = Fat32Media::open("/Volumes/RAMDisk/testcase_01.img".to_string());
+        const FN: &str = "/Volumes/RAMDisk/test_mkdir.img";
+        let sz: usize = 128 * 1024 * 1024;
+        let mut fat = Fat32Media::new(FN, sz).unwrap();
+        for i in 0..11 {
+            let fname = &("/".to_string()+&i.to_string());
+            assert!(fat.mkdir(fname).is_ok());
+        }
     }
 
     use is_valid_short_name;
