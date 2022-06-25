@@ -2527,7 +2527,7 @@ fn mkdir_command(tokens: Vec<&str>, fat: &mut Fat32Media) {
     }
 }
 
-fn repl(fat: &mut Fat32Media) {
+fn repl(fat: &mut Fat32Media) -> io::Result<()> {
 
     use std::collections::HashMap;
     let mut cmds: HashMap<String, ICommand> = HashMap::new();
@@ -2539,14 +2539,9 @@ fn repl(fat: &mut Fat32Media) {
 
     loop {
         print!("> ");
-        std::io::stdout().flush().expect("");
+        std::io::stdout().flush()?;
         let mut buf = String::new();
-        match std::io::stdin().read_line(&mut buf) {
-            Ok(x) => if x == 0 {
-                return;
-            },
-            Err(x) => panic!(x),
-        }
+        std::io::stdin().read_line(&mut buf)?;
 
         let tokens: Vec<&str> = buf.split_ascii_whitespace().collect();
 
@@ -2555,7 +2550,7 @@ fn repl(fat: &mut Fat32Media) {
         }
 
         if tokens[0] == "exit" {
-            return;
+            return Ok(());
         }
 
         match cmds.get(tokens[0]) {
@@ -2613,7 +2608,7 @@ fn main() {
             println!("Free space: {} bytes", free_space_in_bytes);
         },
         SubCommand::Interactive(_t) => {
-            repl(&mut fat);
+            repl(&mut fat).unwrap();
         }
         SubCommand::Ls(t) => {
             match ls(&mut fat, &t.path) {
