@@ -2698,8 +2698,11 @@ mod test {
     }
 
     #[test]
-    fn test_touch() {
-        let mut fat = Fat32Media::open("/Volumes/RAMDisk/testcase_02.img".to_string());
+    fn test_touch() -> io::Result<()> {
+        const FN: &str = "/Volumes/RAMDisk/test_touch.img";
+        let sz: usize = 128 * 1024 * 1024;
+        let mut fat = Fat32Media::new(FN, sz)?;
+
         assert_eq!(fat.touch(&"/0/1".to_string()).unwrap_err(), Errno::ENOENT);
         // On OSX, the newly formatted volume can hold 13 additional
         // entries in its root directory before we need to allocate a
@@ -2712,6 +2715,7 @@ mod test {
         for i in 0..13 {
             assert!(fat.touch(&("/".to_string()+&i.to_string())).is_ok());
         }
+        std::fs::remove_file(FN)
     }
 
     #[test]
