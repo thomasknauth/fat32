@@ -2688,8 +2688,8 @@ mod test {
     use DirEntry;
     #[test]
     #[should_panic]
-    fn test_DirEntry_new() {
-        let e = DirEntry::new("thisnameistoolong".to_string());
+    fn test_dir_entry_new() {
+        DirEntry::new("thisnameistoolong".to_string());
     }
 
     #[test]
@@ -2793,11 +2793,11 @@ mod test {
     /// record containing a single partition covering all the
     /// available disk space.
     fn test_format_disk() -> std::io::Result<()> {
-        const FN: &str = "/Volumes/RAMDisk/d";
+        const FN: &str = "/Volumes/RAMDisk/test_format_disk.img";
         let size_byte: usize = 128 * 1024 * 1024;
         let mut f = OpenOptions::new().write(true).create(true).open(FN)?;
-        let mbr = MasterBootRecord::new_disk(&mut f, size_byte);
-        f.sync_all()?;
+
+        MasterBootRecord::new_disk(&mut f, size_byte)?;
 
         let args = ["attach", "-imagekey", "diskimage-class=CRawDiskImage", "-nomount", FN];
         let out = Command::new("hdiutil").args(args).output().unwrap();
@@ -2817,11 +2817,9 @@ mod test {
     #[test]
     fn test_format_fat32() -> std::io::Result<()> {
 
-        const FN: &str = "/Volumes/RAMDisk/e";
-        let mut f = OpenOptions::new().read(true).write(true).create(true).open(FN)?;
+        const FN: &str = "/Volumes/RAMDisk/test_format_fat32.img";
         let sz: usize = 128 * 1024 * 1024;
-        let mbr = MasterBootRecord::new_disk(&mut f, sz)?;
-        let fatvol = Fat32Media::new_volume(&mut f, &mbr)?;
+        assert!(Fat32Media::new(FN, sz).is_ok());
 
         let out = Command::new("hdiutil").args(["attach", "-imagekey", "diskimage-class=CRawDiskImage", "-nomount", FN]).output().unwrap();
 
@@ -2832,11 +2830,14 @@ mod test {
         let device = words[0];
         let volume = words[0].to_owned() + "s1";
 
-        io::stdout().write_all(&Command::new("diskutil").args(["verifyVolume", &volume]).output().unwrap().stdout)?;
+        let verify_status = Command::new("diskutil").args(["verifyVolume", &volume]).status().unwrap();
+        let mount_status = Command::new("diskutil").args(["mount", &volume]).status().unwrap();
+        let eject_status = Command::new("hdiutil").args(["eject", device]).status().unwrap();
 
-        let status = Command::new("hdiutil").args(["eject", device]).status().unwrap();
-        assert!(status.success());
-        std::fs::remove_file(FN)?;
-        Ok(())
+        assert!(verify_status.success());
+        assert!(mount_status.success());
+        assert!(eject_status.success());
+
+        std::fs::remove_file(FN)
     }
 }
