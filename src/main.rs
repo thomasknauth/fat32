@@ -1702,7 +1702,7 @@ impl Fat32Media {
         return Errno::SUCCESS;
     }
 
-    fn mkdir(&mut self, path: String) -> Result<HybridEntry, Errno> {
+    fn mkdir(&mut self, path: &str) -> Result<HybridEntry, Errno> {
         // Idea 1:
         // touch(path) - creates entry in parent(path)
         // alloc cluster
@@ -2521,7 +2521,7 @@ fn mkdir_command(tokens: Vec<&str>, fat: &mut Fat32Media) {
         return;
     }
 
-    match fat.mkdir(tokens[1].to_string()) {
+    match fat.mkdir(&tokens[1].to_string()) {
         Err(e) => println!("error {:?}", e),
         _ => ()
     }
